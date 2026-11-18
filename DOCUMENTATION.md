@@ -675,6 +675,8 @@ Persistent non-robot foreground clutter can trap tracks. The tracker maintains a
 
 This is aimed at stationary field structures and other static artifacts.
 
+With `season.STATIC_SUPPRESS_SPARES_LOST_TRACKS = True` (BIOBUZZ default), a lost track (invisible, but with a last-known position) near the blob also counts as "very near". Otherwise a robot that parks while its track briefly drops out gets suppressed as clutter and its track can never get it back.
+
 ### 12. Corner-zone suppression
 
 DECODE only (`season.CORNER_ZONE_SUPPRESSION`, off for BIOBUZZ). Top corner field elements can create persistent false blobs. The tracker suppresses detections in two 22-inch top-corner squares unless a currently active robot is already nearby.
@@ -688,6 +690,8 @@ If `field_corners.json` contains `hive_boxes_px` and/or `exclude_px`, those imag
 ### 13. Track initialization
 
 Until the tracker is initialized, it waits for at least four candidate blobs, then chooses the best four-blob lineup from up to `INIT_MAX_CANDIDATES = 8` candidates.
+
+Before the match, robots stand still while field staff may walk on the field. With `season.INIT_STABLE_FRAMES = 5`, only blobs that stayed within `season.INIT_STABLE_IN = 4` inches over the last 5 processed frames can be part of the starting lineup, and each starting robot must come from a different foreground blob. Still, a person standing still on the field before the match can be mistaken for a robot; start processing at the match start with `--start-offset` when the video has pre-match footage.
 
 Robots can start hidden (for example behind the HIVE). If fewer than four blobs are visible after `season.INIT_PARTIAL_AFTER_FRAMES` processed frames, the tracker starts with the best lineup of the visible blobs (at least `season.INIT_MIN_ROBOTS`). The remaining robot IDs stay unseen until a clean, unsplit blob appears at least 1.5 robot widths (27 in) away from every known robot; that blob is then claimed by the lowest unseen ID (logged as `Track N acquired`). Robot IDs are still left-to-right among the robots visible at initialization; hidden robots get the highest IDs.
 
@@ -721,6 +725,8 @@ Velocity smoothing is:
 - `new_vel = 0.45 * previous_vel + 0.55 * raw_delta`
 
 Field velocity is clipped to `MAX_SPEED_IN = 140.0` per processed frame before smoothing.
+
+With `season.RESET_VELOCITY_ON_JUMP = True` (BIOBUZZ default), a position update that jumps more than `MAX_DIST_IN = 30` inches (a lost track re-acquiring its robot elsewhere) resets velocity to zero instead of being smoothed in. Without this, the jump becomes a huge velocity, the next prediction lands far away, and the track loses the robot again immediately.
 
 Heading is derived from motion, not shape:
 
@@ -760,6 +766,8 @@ The assignment solver:
 - fallback: greedy minimum-cost matching if SciPy is unavailable
 
 Skip columns are added to the cost matrix so a track is allowed to remain unmatched when all real matches are bad.
+
+Lost-track protection (`season.PROTECT_VISIBLE_FROM_LOST = True`, BIOBUZZ default): a track that has been invisible for more than `VISIBLE_COAST` frames may not claim an unsplit blob within 18 in of a currently visible track. Without it, a lost track steals a visible robot's blob, the two tracks alternate on that robot every frame, and both appear visible (duplicate robots in the output). On the DECODE example video this happened in about 46% of rows with the old behavior and under 1% with protection on.
 
 ### 16. Appearance re-identification
 

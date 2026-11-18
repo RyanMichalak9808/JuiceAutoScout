@@ -126,7 +126,11 @@ python3 tools/calibrate.py path/to/match.mp4
 
 Drag the 4 corners, press `H` and click two opposite corners for the red HIVE then the blue HIVE, press `X` and click two corners around the clock, then press `S`.
 
-The broadcast-timer match bounds detector (`--auto-match-bounds`) was built for the DECODE overlay; use `--start-offset` for BIOBUZZ videos until it is updated.
+The broadcast-timer match bounds detector (`--auto-match-bounds`) was built for the DECODE overlay; use `--start-offset` for BIOBUZZ videos until it is updated. Starting at the match start matters: field staff walking on the field before the match can otherwise be mistaken for robots.
+
+```bash
+python3 auto_scout.py --no-download --video-path match.mp4 --corners field_corners.json --start-offset 8
+```
 
 ## Repository Layout
 

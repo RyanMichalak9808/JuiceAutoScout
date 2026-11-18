@@ -25,6 +25,10 @@ class ShotDetector:
     SHOT_DEDUP_TIME_S = 0.35
     GOAL_APPROACH_SIDE_PAD_FRAC = 0.30
     GOAL_APPROACH_DOWN_FRAC = 0.95
+    # Calibrated HIVE boxes already include the space around the cells, so
+    # the "approaching" zone around them is much smaller.
+    BOX_APPROACH_SIDE_PAD_FRAC = 0.15
+    BOX_APPROACH_DOWN_FRAC = 0.25
     GOAL_CONFIRM_MIN_FRAMES = 2
     GOAL_ENTRY_MAX_MISSING = 5
     # Clear HIVE cells: a made ball stays visible and comes to rest inside the
@@ -80,8 +84,12 @@ class ShotDetector:
                   "Draw HIVE boxes with tools/calibrate.py (key H).")
             return
         self._goal_openings = openings
+        if tracker.hive_boxes:
+            side_pad, down = self.BOX_APPROACH_SIDE_PAD_FRAC, self.BOX_APPROACH_DOWN_FRAC
+        else:
+            side_pad, down = self.GOAL_APPROACH_SIDE_PAD_FRAC, self.GOAL_APPROACH_DOWN_FRAC
         self._goal_approaches = {
-            color: self._build_goal_approach(poly)
+            color: self._build_goal_approach(poly, side_pad, down)
             for color, poly in openings.items()
         }
         self._ready = True
@@ -486,7 +494,7 @@ class ShotDetector:
             )
         return openings
 
-    def _build_goal_approach(self, poly):
+    def _build_goal_approach(self, poly, side_pad_frac, down_frac):
         pts = poly.reshape(-1, 2).astype(self.np.float32)
         x_min = float(self.np.min(pts[:, 0]))
         x_max = float(self.np.max(pts[:, 0]))
@@ -494,8 +502,8 @@ class ShotDetector:
         y_max = float(self.np.max(pts[:, 1]))
         w = max(x_max - x_min, 1.0)
         h = max(y_max - y_min, 1.0)
-        pad_x = w * self.GOAL_APPROACH_SIDE_PAD_FRAC
-        down = h * self.GOAL_APPROACH_DOWN_FRAC
+        pad_x = w * side_pad_frac
+        down = h * down_frac
         rect = self.np.array([
             [x_min - pad_x, y_min],
             [x_max + pad_x, y_min],

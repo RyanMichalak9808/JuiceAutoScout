@@ -46,6 +46,9 @@ class RobotTracker:
     LOCAL_SCALE_MAX_FRAC = 3.0
     # BLOB_MIN shrinks for far robots, but never below this fraction of it.
     BLOB_MIN_SCALE_FLOOR = 0.2
+    # Floor-contact positions up to this far outside the field are clamped
+    # onto the edge instead of being dropped (only with FOOT_OFFSET_FRAC > 0).
+    FIELD_EDGE_TOL_IN = 14.0
     BALL_MASK_OPEN_FRAC = 0.030
     BALL_MASK_CLOSE_FRAC = 0.055
     BALL_MASK_DILATE_FRAC = 0.070
@@ -95,6 +98,7 @@ class RobotTracker:
         self.hive_boxes: Dict[str, object] = {}   # color -> int32 polygon (N,1,2)
         self.exclude_polys: List[object] = []
         self._init_wait_frames = 0
+        self._init_history: List[List[Tuple[float, float]]] = []
         self._reid_refs: Optional[Dict[int, List]] = None
         # Static blob suppression: track per-blob pixel location history
         # Format: {approx_pixel_key: consecutive_static_frames}
@@ -345,15 +349,16 @@ class RobotTracker:
 
         if not self._initialized:
             self._init_wait_frames += 1
-            lineup = self._select_bootstrap_lineup(blobs)
+            init_blobs = self._stable_init_blobs(blobs)
+            lineup = self._select_bootstrap_lineup(init_blobs)
             reason = "best visible 4-blob lineup"
             if (lineup is None
                     and self._init_wait_frames >= season.INIT_PARTIAL_AFTER_FRAMES
-                    and len(blobs) >= season.INIT_MIN_ROBOTS):
+                    and len({b[3] for b in init_blobs}) >= season.INIT_MIN_ROBOTS):
                 # Some robots are hidden (e.g. behind the HIVE). Start with the
                 # visible ones; the others are picked up when they appear.
-                count = min(len(blobs), 4)
-                lineup = self._select_bootstrap_lineup(blobs, count=count)
+                count = min(len({b[3] for b in init_blobs}), 4)
+                lineup = self._select_bootstrap_lineup(init_blobs, count=count)
                 reason = "partial {}-blob lineup ({} robot(s) not visible yet)".format(
                     count, 4 - count)
             if lineup is None:
@@ -570,6 +575,23 @@ class RobotTracker:
         self._initialized = True
         print("[INFO] Tracker initialized from {}.".format(reason))
 
+    def _stable_init_blobs(self, blobs):
+        n = max(1, int(season.INIT_STABLE_FRAMES))
+        self._init_history.append([(float(b[0]), float(b[1])) for b in blobs])
+        self._init_history = self._init_history[-n:]
+        if n <= 1:
+            return blobs
+        if len(self._init_history) < n:
+            return []
+        tol = season.INIT_STABLE_IN
+        return [
+            b for b in blobs
+            if all(
+                any(math.hypot(b[0] - x, b[1] - y) <= tol for x, y in frame_pts)
+                for frame_pts in self._init_history
+            )
+        ]
+
     def _select_bootstrap_lineup(self, blobs, count: int = 4):
         if count <= 0 or len(blobs) < count:
             return None
@@ -578,6 +600,11 @@ class RobotTracker:
         best = None
         best_score = float("inf")
         for combo in itertools.combinations(candidate_pool, count):
+            # Each starting robot must come from its own foreground blob; a
+            # single blob split into pieces (robot + a person's arm, ...) must
+            # not seed several tracks.
+            if len({b[3] for b in combo}) < count:
+                continue
             lineup = sorted(combo, key=lambda b: b[0])
             spacing_penalty = 0.0
             for left, right in zip(lineup, lineup[1:]):
@@ -622,7 +649,16 @@ class RobotTracker:
             pred_x, pred_y = self._predict_field_pos(i)
             pred_px_x, pred_px_y = self._predict_image_pos(i)
             robot_px = self._track_robot_px(i)
+            lost = self._coast[i] > self.VISIBLE_COAST
+            visible_others = [
+                self._pos[t] for t in seeded
+                if t != i and self._coast[t] <= self.VISIBLE_COAST
+            ] if (lost and season.PROTECT_VISIBLE_FROM_LOST) else []
             for j, b in enumerate(blobs):
+                if visible_others and b[7] == 1 and any(
+                        math.hypot(b[0] - ox, b[1] - oy) < self.ROBOT_SIZE_IN
+                        for ox, oy in visible_others):
+                    continue
                 d_field = math.hypot(b[0]-pred_x, b[1]-pred_y)
                 d_img   = math.hypot(b[4]-pred_px_x, b[5]-pred_px_y)
                 if i in self._underresolved_tracks and not self._blob_matches_track_merge(i, b):
@@ -744,6 +780,12 @@ class RobotTracker:
     def _update_track_motion(self, track_id: int, field_pos, image_pos) -> None:
         old_field = self._pos[track_id]
         old_image = self._pos_px[track_id]
+        if (season.RESET_VELOCITY_ON_JUMP and old_field is not None
+                and math.hypot(field_pos[0] - old_field[0],
+                               field_pos[1] - old_field[1]) > self.MAX_DIST_IN):
+            self._vel[track_id] = (0.0, 0.0)
+            self._vel_px[track_id] = (0.0, 0.0)
+            return
         if old_field is not None:
             raw_vx = field_pos[0] - old_field[0]
             raw_vy = field_pos[1] - old_field[1]
@@ -1508,7 +1550,15 @@ class RobotTracker:
             for cx, cy in sub_centers:
                 fx, fy = self._image_to_field(cx, cy, bottom_v=contour_bottom)
                 if not (0 <= fx <= 144 and 0 <= fy <= 144):
-                    continue
+                    # With the floor-contact correction, robots touching a
+                    # wall can project slightly outside; keep them on the edge.
+                    tol = self.FIELD_EDGE_TOL_IN
+                    if (season.FOOT_OFFSET_FRAC > 0
+                            and -tol <= fx <= 144 + tol and -tol <= fy <= 144 + tol):
+                        fx = min(max(fx, 0.0), 144.0)
+                        fy = min(max(fy, 0.0), 144.0)
+                    else:
+                        continue
                 # ── Corner zone suppression ─────────────────────────────────
                 # Blobs inside the top-left or top-right corner zones are
                 # suppressed unless a robot is known to be actively moving there.
@@ -1567,7 +1617,8 @@ class RobotTracker:
                     near_track = any(
                         self._pos[tid] is not None
                         and math.hypot(fx - self._pos[tid][0], fy - self._pos[tid][1]) < self.ROBOT_SIZE_IN * 1.5
-                        and self._coast[tid] <= self.VISIBLE_COAST
+                        and (self._coast[tid] <= self.VISIBLE_COAST
+                             or season.STATIC_SUPPRESS_SPARES_LOST_TRACKS)
                         for tid in range(4)
                     )
                     if count >= self.STATIC_BLOB_SUPPRESS_FRAMES and not near_track:

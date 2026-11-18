@@ -51,3 +51,28 @@ FOOT_OFFSET_FRAC = 0.30
 # they appear.
 INIT_PARTIAL_AFTER_FRAMES = 20
 INIT_MIN_ROBOTS = 2
+
+# Robots stand still before the match starts while field staff walk around.
+# Only blobs that stayed within INIT_STABLE_IN inches for the last
+# INIT_STABLE_FRAMES processed frames can seed the starting lineup.
+# 1 disables the check (previous behavior).
+INIT_STABLE_FRAMES = 5
+INIT_STABLE_IN = 4.0
+
+# A track whose robot has been missing for a while (lost) may not take a blob
+# that a currently visible robot is on. Without this, a lost track steals a
+# visible robot's blob, the two tracks alternate on that robot and both look
+# visible (duplicate robots). False = previous behavior.
+PROTECT_VISIBLE_FROM_LOST = True
+
+# Static-blob suppression drops blobs that have not moved for a while unless
+# a robot track is nearby. With True, a lost (temporarily invisible) track
+# also counts, so a parked robot whose track dropped out for a moment is not
+# suppressed forever. False = previous behavior (only visible tracks count).
+STATIC_SUPPRESS_SPARES_LOST_TRACKS = True
+
+# When a track is re-acquired far from its last position (it was lost, or
+# snapped to a different blob), treat it as a fresh start (zero velocity)
+# instead of feeding the jump into its velocity, which otherwise throws the
+# next prediction far off and loses the robot again. False = previous behavior.
+RESET_VELOCITY_ON_JUMP = True

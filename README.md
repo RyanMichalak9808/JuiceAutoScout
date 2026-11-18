@@ -112,6 +112,7 @@ That produces a `field_corners.json` file. Pass it to `auto_scout.py` with `--co
 ## Season: BIOBUZZ (2026-2027)
 AutoScout is configured for BIOBUZZ presented by RTX. Game-specific settings live in `autoscout/season.py`:
 
+- HIVE tips are detected per alliance (`autoscout/hive.py`)
 - shots are POLLEN (yellow balls) launched into the red / blue HIVE; NECTAR and FLOWERS are not tracked
 - `robotN_shot_goal` is the HIVE color (`red` or `blue`)
 - the tracker is set up for the typical low, audience-side BIOBUZZ camera: robot size varies with field position (`PERSPECTIVE_ROBOT_SCALE`) and positions use the robot's floor-contact point (`FOOT_OFFSET_FRAC`)
@@ -132,6 +133,15 @@ The broadcast-timer match bounds detector (`--auto-match-bounds`) was built for 
 python3 auto_scout.py --no-download --video-path match.mp4 --corners field_corners.json --start-offset 8
 ```
 
+Example videos with calibrations (Piper Meet stream, 640x360):
+
+```bash
+python3 auto_scout.py --no-download --video-path examples/piper_q9.mp4 --corners examples/piper_q9_corners.json --start-offset 7.5 --debug-video --debug-every 3
+python3 auto_scout.py --no-download --video-path examples/piper_q11.mp4 --corners examples/piper_q11_corners.json --start-offset 6 --debug-video --debug-every 3
+```
+
+HIVE tips are detected from the HIVE boxes and written to `hive_tips.csv`; on these two videos they match the broadcast tip counters exactly.
+
 ## Repository Layout
 
 - `auto_scout.py`
@@ -140,7 +150,7 @@ python3 auto_scout.py --no-download --video-path match.mp4 --corners field_corne
   Starts the local dashboard web server.
 - `autoscout/`
   Main Python package for the tracker internals.
-  Includes `season.py`, `tracker.py`, `shot.py`, `runtime.py`, `geometry.py`, `models.py`, `helpers.py`, `wpilog.py`, `ftc_events.py`, `hardware.py`, and `dashboard_server.py`.
+  Includes `season.py`, `hive.py`, `tracker.py`, `shot.py`, `runtime.py`, `geometry.py`, `models.py`, `helpers.py`, `wpilog.py`, `ftc_events.py`, `hardware.py`, and `dashboard_server.py`.
 - `dashboard_static/`
   No-build dashboard front-end files served by `dashboard_server.py`.
 - `util/`
@@ -165,6 +175,10 @@ When a run finishes, the output directory typically contains:
   Flat table of timestamped robot positions, headings, visibility flags, and shot events. `x/y` are in inches from field center.
 - `robot_positions.jlog`
   Compact binary JUICE LOG output for the same tracker table data, stored in a self-describing schema format with CRC-checked chunks so truncated writes keep earlier completed data readable.
+- `hive_tips.csv`
+  One row per HIVE tip (alliance, match time, approximate broadcast clock, phase, video time).
+- `shot_events.csv`
+  One row per resolved shot (robot, made/missed, HIVE, shooter position, times).
 - `match_log.wpilog`
   WPILOG output using center-origin coordinates converted to meters with the viewer-facing axis remap `x' = y`, `y' = x`, and `heading' = π/2 - heading`.
 - `median_background.jpg`

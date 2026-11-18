@@ -28,7 +28,7 @@ The repo currently contains several user-facing tools:
 - `auto_scout.py`: runnable tracker entrypoint, exports, and CLI.
 - `dashboard_server.py`: starts the local dashboard server.
 - `autoscout/`: tracker implementation package.
-  Includes `season.py`, `tracker.py`, `shot.py`, `runtime.py`, `geometry.py`, `models.py`, `helpers.py`, `wpilog.py`, `ftc_events.py`, `hardware.py`, and `dashboard_server.py`.
+  Includes `season.py`, `hive.py`, `tracker.py`, `shot.py`, `runtime.py`, `geometry.py`, `models.py`, `helpers.py`, `wpilog.py`, `ftc_events.py`, `hardware.py`, and `dashboard_server.py`.
 - `dashboard_static/`: no-build dashboard front-end assets served locally by the Python dashboard server.
 - `util/`: shared cross-tool helpers.
   Includes `juice_log.py` and `jlog.js`.
@@ -203,6 +203,7 @@ Most implementation details now live in `autoscout/`.
 ### `autoscout/` package layout
 
 - `autoscout/season.py`: game-specific settings for the current season (BIOBUZZ): ball colors, HIVE sides, field image, and camera-geometry switches. Start here when adapting to a new game.
+- `autoscout/hive.py`: `HiveTipDetector`, HIVE tip detection from the calibrated HIVE boxes.
 - `autoscout/tracker.py`: `RobotTracker`, foreground segmentation, blob extraction, assignment, merge handling, and track-state updates.
 - `autoscout/shot.py`: `ShotDetector`, ball-track association, HIVE target detection, and shot resolution.
 - `autoscout/helpers.py`: `FieldDetector`, manual re-ID loading, homography helper functions, and debug-wireframe helpers.
@@ -767,6 +768,8 @@ The assignment solver:
 
 Skip columns are added to the cost matrix so a track is allowed to remain unmatched when all real matches are bad.
 
+Robot count per blob: a blob's area is compared with `(local 18 in size)^2 x single-robot ratio`. With `season.AUTO_ROBOT_AREA = True` the single-robot ratio is measured from the unsplit blobs at initialization (median, clamped to 0.3-1.2). On the Piper Meet stream single robots measured about 0.6x, so without this two touching robots (about 1.2x) never reached the 2-robot threshold (`EXPECT_2WAY_AREA = 1.6`) and were tracked as one.
+
 Lost-track protection (`season.PROTECT_VISIBLE_FROM_LOST = True`, BIOBUZZ default): a track that has been invisible for more than `VISIBLE_COAST` frames may not claim an unsplit blob within 18 in of a currently visible track. Without it, a lost track steals a visible robot's blob, the two tracks alternate on that robot every frame, and both appear visible (duplicate robots in the output). On the DECODE example video this happened in about 46% of rows with the old behavior and under 1% with protection on.
 
 ### 16. Appearance re-identification
@@ -938,6 +941,37 @@ Important limitations:
 - it depends on the ball color mask being clean for the event lighting
 - it can miss shots that are heavily occluded or merge into other colored objects
 - it can confuse unusual passes or fast ball-handling events with shots if the trajectory looks goal-directed
+
+### 24. HIVE tip detection (`autoscout/hive.py`)
+
+Each HIVE is a bi-stable seesaw. Inside its calibrated `hive_boxes_px` box, the alliance-colored pixels (`season.HIVE_HSV_RANGES`) sit at one of two heights depending on which CELL faces up, and jump when the HIVE tips. `HiveTipDetector` tracks the vertical centroid of those pixels (0 = top of the box, 1 = bottom) every processed frame:
+
+- the first `CONFIRM_S` (1 s) of samples set the starting level
+- a sample more than `MIN_SHIFT_FRAC` (10% of the box height) from the current level starts a candidate move
+- if the samples stay away from the old level for `CONFIRM_S` and agree with each other (median absolute deviation under `MAX_SPREAD_FRAC`), a tip is recorded at the time the move started and the new level becomes current
+- frames where less than `MIN_COLOR_FRAC` of the box has the alliance color are skipped
+
+On the two Piper Meet example videos this matched the broadcast tip counters exactly (q9: red 5, blue 2; q11: red 1, blue 5). Detected tips come 1-8 s before the overlay counter updates.
+
+While a HIVE is tipping (and 2 s after), ball tracks that start inside that HIVE's box are not allowed to become launches; balls in a moving CELL would otherwise look like shots.
+
+Tip detection needs `hive_boxes_px`; without them it is disabled with a warning. Draw each box around both CELLS in both tip positions.
+
+### 25. Event logs
+
+Besides the per-frame outputs, every run writes:
+
+- `hive_tips.csv`: `alliance, tip_number, match_time_s, match_clock, phase, video_time_s, frame, level_before, level_after`
+- `shot_events.csv`: `match_time_s, match_clock, phase, video_time_s, frame, robot, result, hive, shooter_x_in, shooter_y_in`
+
+`match_time_s` is seconds since `--start-offset`. `phase` is `auto` (0-30 s), `transition` (30-38 s), `teleop` (38-158 s) or `after_end` (`season.AUTO_END_S`, `TELEOP_START_S`, `MATCH_END_S`). `match_clock` approximates the broadcast clock (2:30 to 2:00 in auto, held at 2:00 during the transition, 2:00 to 0:00 in teleop), and `video_time_s` is the position in the source video, for checking events by hand. A summary of tips per alliance and shots per robot is printed at the end of the run.
+
+### 26. Debug overlay (BIOBUZZ additions)
+
+- robot dots are drawn at the floor-contact point
+- arrows show each robot's actual motion over the last 0.5 s: length grows with speed and the speed is printed in in/s; no arrow below 3 in/s
+- robot-sized shapes with no visible track on them are labeled `no track`
+- each HIVE box shows a thin line at the measured color level and a running `tips` count
 
 ## `tools/calibrate.py`
 

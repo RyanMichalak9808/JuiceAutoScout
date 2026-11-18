@@ -99,6 +99,9 @@ class RobotTracker:
         self.exclude_polys: List[object] = []
         self._init_wait_frames = 0
         self._init_history: List[List[Tuple[float, float]]] = []
+        # Typical single-robot blob area / (18 in robot size)^2; learned at
+        # initialization when season.AUTO_ROBOT_AREA is on.
+        self._single_area_ratio = 1.0
         self._reid_refs: Optional[Dict[int, List]] = None
         # Static blob suppression: track per-blob pixel location history
         # Format: {approx_pixel_key: consecutive_static_frames}
@@ -365,6 +368,7 @@ class RobotTracker:
                 for p in self.tracked_poses:
                     p.visible = False
                 return self.tracked_poses
+            self._learn_single_robot_area(init_blobs)
             self._initialize_tracks_from_lineup(lineup, reason)
             return self.tracked_poses
 
@@ -574,6 +578,25 @@ class RobotTracker:
             self.tracked_poses[i].visible = True
         self._initialized = True
         print("[INFO] Tracker initialized from {}.".format(reason))
+
+    def _learn_single_robot_area(self, blobs) -> None:
+        if not season.AUTO_ROBOT_AREA:
+            return
+        ratios = []
+        seen = set()
+        for b in blobs:
+            if b[3] in seen or b[7] != 1 or b[8] is None:
+                continue
+            seen.add(b[3])
+            px = self._contour_robot_px(b[8])
+            ratios.append(float(self.cv2.contourArea(b[8])) / max(px * px, 1.0))
+        if len(ratios) < 2:
+            return
+        ratios.sort()
+        median = ratios[len(ratios) // 2]
+        self._single_area_ratio = min(max(median, 0.3), 1.2)
+        print("[INFO] Single-robot blob size: {:.2f}x an 18 in square (from {} robots).".format(
+            self._single_area_ratio, len(ratios)))
 
     def _stable_init_blobs(self, blobs):
         n = max(1, int(season.INIT_STABLE_FRAMES))
@@ -1461,7 +1484,7 @@ class RobotTracker:
 
     def _expected_robot_count(self, contour_area: float, contour=None) -> int:
         robot_px = self._contour_robot_px(contour)
-        robot_area = max(robot_px * robot_px, 1.0)
+        robot_area = max(robot_px * robot_px * self._single_area_ratio, 1.0)
         ratio = contour_area / robot_area
         if ratio >= self.EXPECT_4WAY_AREA:
             return 4
@@ -1672,7 +1695,7 @@ class RobotTracker:
     def _blob_quality_penalty(self, area: float, per_area: float, split_count: int,
                               robot_px: Optional[float] = None) -> float:
         robot_px = self._robot_max_px if robot_px is None else robot_px
-        robot_area = max(robot_px * robot_px, 1.0)
+        robot_area = max(robot_px * robot_px * self._single_area_ratio, 1.0)
         ratio = per_area / robot_area
         penalty = min(abs(math.log(max(ratio, 1e-6))), 2.5) * 0.28
         if split_count == 1 and area > robot_area * 1.8:

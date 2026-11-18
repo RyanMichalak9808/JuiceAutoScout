@@ -17,6 +17,7 @@ from autoscout.helpers import (
 from autoscout import season
 from autoscout.match_timer import scan_match_bounds
 from autoscout.runtime import _make_bar, _require, install_console_output
+from autoscout.hive import HiveTipDetector
 from autoscout.shot import ShotDetector
 from autoscout.tracker import RobotTracker
 from autoscout.wpilog import WPILogWriter
@@ -239,6 +240,10 @@ def process_match(
 
     tracker = RobotTracker(cv2, np)
     shot_detector = ShotDetector(cv2, np)
+    hive_detector = HiveTipDetector(cv2, np)
+    shot_log = []   # rows for shot_events.csv
+    tip_log = []    # rows for hive_tips.csv
+    speed_hist = [[] for _ in range(4)]  # per robot: (match_time_s, x_in, y_in) for debug speed arrows
     field_detector = FieldDetector(cv2, np)
 
     ordered = None
@@ -277,6 +282,7 @@ def process_match(
         H_inv = np.linalg.inv(H_2d)
         tracker.setup(video_path, ordered, frame_shape, calibration_extras)
         shot_detector.setup(tracker)
+        hive_detector.setup(tracker)
         print("[INFO] Using manual field corners.")
         _emit_dashboard_stage("Calibrating Trackers", "completed", "Using manual field corners")
         _emit_dashboard_stage("Tracking Match", "in_progress", "Tracking robots across the match")
@@ -363,6 +369,7 @@ def process_match(
                 H_inv = np.linalg.inv(H_2d)
                 tracker.setup(video_path, ordered, frame.shape, calibration_extras)
                 shot_detector.setup(tracker)
+                hive_detector.setup(tracker)
                 print("\n  [t={:.1f}s] Field auto-detected.".format(match_time_s))
                 calibration_completed = True
                 _emit_dashboard_stage("Calibrating Trackers", "completed", "Field auto-detected")
@@ -373,7 +380,25 @@ def process_match(
                     cv2.imwrite(os.path.join(output_dir, "median_background.jpg"), tracker._bg)
 
         poses = tracker.update(frame)
-        shot_events = shot_detector.update(current_frame_num, match_time_s, poses, tracker)
+        tip_events = hive_detector.update(frame, current_frame_num, match_time_s)
+        shot_events = shot_detector.update(
+            current_frame_num, match_time_s, poses, tracker,
+            hive_moving=lambda color: hive_detector.is_moving(color, match_time_s))
+        for tip in tip_events:
+            tip_log.append(_tip_row(tip, video_fps))
+            print("[INFO] HIVE tip: {} #{} at match t={:.1f}s (video {:.1f}s, {})".format(
+                tip.alliance, tip.tip_number, tip.match_time_s,
+                tip.frame_num / video_fps, _match_phase(tip.match_time_s)))
+        for event in shot_events:
+            shot_log.append(_shot_row(event, video_fps))
+        for robot_id, pose in enumerate(poses):
+            hist = speed_hist[robot_id]
+            if pose.visible:
+                hist.append((match_time_s, pose.x_in, pose.y_in))
+                while hist and match_time_s - hist[0][0] > 0.5:
+                    hist.pop(0)
+            else:
+                hist.clear()
         merge_active = bool(tracker._merge_groups)
         recent_merge = any(v > 0 for v in tracker._merge_recent)
         if merge_active or recent_merge:
@@ -425,6 +450,7 @@ def process_match(
                 cv2.polylines(dbg, [ordered.astype(np.int32).reshape(-1, 1, 2)],
                               True, (0, 200, 0), 2)
                 shot_detector.draw_debug(dbg)
+                hive_detector.draw_debug(dbg)
             for ex_poly in tracker.exclude_polys:
                 cv2.polylines(dbg, [ex_poly], True, (128, 128, 128), 1, cv2.LINE_AA)
 
@@ -459,6 +485,17 @@ def process_match(
                 for sx, sy in split_centers[:4]:
                     cv2.drawMarker(dbg, (sx, sy), (0, 255, 255),
                                    cv2.MARKER_CROSS, 16, 2)
+                # Robot-sized shapes with no visible track on them.
+                track_pts = [tracker._pos_px[t] for t in range(4)
+                             if tracker._pos_px[t] is not None and poses[t].visible]
+                for contour in all_cnts:
+                    if any(cv2.pointPolygonTest(contour, (float(px), float(py)), True)
+                           >= -0.5 * tracker._contour_robot_px(contour)
+                           for px, py in track_pts):
+                        continue
+                    bx, by, bw, _bh = cv2.boundingRect(contour)
+                    cv2.putText(dbg, "no track", (bx, max(10, by - 4)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 200, 255), 1)
 
             fh_d, fw_d = frame.shape[:2]
             cv2.circle(dbg, (fw_d - 40, 40),
@@ -507,14 +544,24 @@ def process_match(
                                     tracker, H_inv, pose, (ix, iy), color)
                 cv2.putText(dbg, "R{}".format(i), (ix - 10, iy - 24),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                vx_px, vy_px = tracker._vel_px[i]
-                speed_px = math.hypot(vx_px, vy_px)
-                if speed_px >= 0.35:
-                    scale = 28.0 / speed_px
-                    dx = int(round(vx_px * scale))
-                    dy = int(round(vy_px * scale))
-                    cv2.arrowedLine(dbg, (ix, iy), (ix + dx, iy + dy),
-                                    (255, 255, 255), 2)
+                # Speed arrow from the robot's actual motion over the last
+                # 0.5 s: direction in the image, length grows with speed.
+                hist = speed_hist[i]
+                if len(hist) >= 2 and hist[-1][0] - hist[0][0] > 0.15:
+                    t0, x0, y0 = hist[0]
+                    t1, x1, y1 = hist[-1]
+                    speed_in_s = math.hypot(x1 - x0, y1 - y0) / max(t1 - t0, 1e-6)
+                    if speed_in_s >= 3.0:
+                        p0 = cv2.perspectiveTransform(np.array([[[x0, y0]]], dtype=np.float32), H_inv)[0][0]
+                        p1 = cv2.perspectiveTransform(np.array([[[x1, y1]]], dtype=np.float32), H_inv)[0][0]
+                        dxp, dyp = float(p1[0] - p0[0]), float(p1[1] - p0[1])
+                        norm = math.hypot(dxp, dyp)
+                        if norm > 1e-6:
+                            length = min(70.0, 14.0 + 0.6 * speed_in_s)
+                            end = (int(round(ix + dxp / norm * length)), int(round(iy + dyp / norm * length)))
+                            cv2.arrowedLine(dbg, (ix, iy), end, (255, 255, 255), 2, tipLength=0.25)
+                            cv2.putText(dbg, "{:.0f} in/s".format(speed_in_s), (end[0] + 3, end[1] + 4),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
                 n_drawn += 1
 
             n_merged = sum(len(merge_group.track_ids) for merge_group in tracker._merge_groups.values())
@@ -563,15 +610,113 @@ def process_match(
     csv_file.close()
     jlog_writer.close()
     cap.release()
+    tips_path = os.path.join(output_dir, "hive_tips.csv")
+    shots_path = os.path.join(output_dir, "shot_events.csv")
+    _write_rows(tips_path, TIP_LOG_COLUMNS, tip_log)
+    _write_rows(shots_path, SHOT_LOG_COLUMNS, shot_log)
     print("\n[DONE] {} frames processed.".format(processed))
     print("  CSV:    {}".format(csv_path))
     print("  JLOG:   {}".format(jlog_path))
     print("  WPILOG: {}".format(wpilog_path))
+    print("  TIPS:   {}".format(tips_path))
+    print("  SHOTS:  {}".format(shots_path))
+    _print_event_summary(tip_log, shot_log)
     if debug:
         debug_location = debug_video_path if debug_video_path else (debug_dir or "dashboard stream")
         print("  Debug:  {}".format(debug_location))
     _emit_dashboard_stage("Cleaning Up", "completed", "Outputs are ready")
     _print_instructions()
+
+
+TIP_LOG_COLUMNS = [
+    "alliance", "tip_number", "match_time_s", "match_clock", "phase",
+    "video_time_s", "frame", "level_before", "level_after",
+]
+SHOT_LOG_COLUMNS = [
+    "match_time_s", "match_clock", "phase", "video_time_s", "frame",
+    "robot", "result", "hive", "shooter_x_in", "shooter_y_in",
+]
+
+
+def _match_phase(match_time_s):
+    if match_time_s < 0:
+        return "pre_match"
+    if match_time_s < season.AUTO_END_S:
+        return "auto"
+    if match_time_s < season.TELEOP_START_S:
+        return "transition"
+    if match_time_s <= season.MATCH_END_S:
+        return "teleop"
+    return "after_end"
+
+
+def _match_clock(match_time_s):
+    """Approximate broadcast clock: counts 2:30 -> 2:00 in auto, holds at
+    2:00 during the transition, then counts 2:00 -> 0:00 in teleop."""
+    if match_time_s < season.AUTO_END_S:
+        remaining = (season.MATCH_END_S - season.TELEOP_START_S
+                     + season.AUTO_END_S - max(0.0, match_time_s))
+    elif match_time_s < season.TELEOP_START_S:
+        remaining = season.MATCH_END_S - season.TELEOP_START_S
+    else:
+        remaining = max(0.0, season.MATCH_END_S - match_time_s)
+    remaining = int(math.ceil(remaining - 1e-6))
+    return "{}:{:02d}".format(remaining // 60, remaining % 60)
+
+
+def _tip_row(tip, video_fps):
+    return {
+        "alliance": tip.alliance,
+        "tip_number": tip.tip_number,
+        "match_time_s": "{:.2f}".format(tip.match_time_s),
+        "match_clock": _match_clock(tip.match_time_s),
+        "phase": _match_phase(tip.match_time_s),
+        "video_time_s": "{:.2f}".format(tip.frame_num / video_fps),
+        "frame": tip.frame_num,
+        "level_before": "{:.3f}".format(tip.level_before),
+        "level_after": "{:.3f}".format(tip.level_after),
+    }
+
+
+def _shot_row(event, video_fps):
+    return {
+        "match_time_s": "{:.2f}".format(event.timestamp_s),
+        "match_clock": _match_clock(event.timestamp_s),
+        "phase": _match_phase(event.timestamp_s),
+        "video_time_s": "{:.2f}".format(event.frame_num / video_fps),
+        "frame": event.frame_num,
+        "robot": "R{}".format(event.shooter_id),
+        "result": event.result,
+        "hive": event.goal_color or "unknown",
+        "shooter_x_in": "{:.1f}".format(event.shot_x_in),
+        "shooter_y_in": "{:.1f}".format(event.shot_y_in),
+    }
+
+
+def _write_rows(path, columns, rows):
+    with open(path, "w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=columns)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _print_event_summary(tip_log, shot_log):
+    print("\n  HIVE tips:")
+    for alliance in ("red", "blue"):
+        rows = [r for r in tip_log if r["alliance"] == alliance]
+        in_match = [r for r in rows if r["phase"] in ("auto", "transition", "teleop")]
+        auto = [r for r in rows if r["phase"] == "auto"]
+        print("    {:<5} {} during match ({} in auto){}".format(
+            alliance, len(in_match), len(auto),
+            "" if len(rows) == len(in_match) else ", {} outside match time".format(len(rows) - len(in_match))))
+    print("  Shots (made / missed):")
+    for robot in ("R0", "R1", "R2", "R3"):
+        rows = [r for r in shot_log if r["robot"] == robot]
+        made = sum(1 for r in rows if r["result"] == "made")
+        print("    {}    {} / {}".format(robot, made, len(rows) - made))
+    for hive in ("red", "blue"):
+        made = sum(1 for r in shot_log if r["result"] == "made" and r["hive"] == hive)
+        print("    into {} HIVE: {} made".format(hive, made))
 
 
 def _print_instructions():

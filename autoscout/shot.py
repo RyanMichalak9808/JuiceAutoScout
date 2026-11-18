@@ -13,7 +13,10 @@ class ShotDetector:
     BALL_MIN_CONTOUR_AREA_PX = 3.0
     BALL_MAX_CONTOUR_AREA_PX = 200.0
     BALL_ASSOC_DIST_PX = 34.0
-    BALL_ASSOC_DIST_FAST_PX = 124.0
+    # Max jump (px at REF_FRAME_WIDTH) from the predicted position for a ball
+    # already marked launched. 124 chained unrelated POLLEN into one "shot"
+    # on BIOBUZZ footage.
+    BALL_ASSOC_DIST_FAST_PX = 70.0
     BALL_MAX_MISSING = 12
     SHOT_MAX_START_DIST_PX = 84.0
     SHOT_MIN_DISP_PX = 8.0
@@ -96,9 +99,14 @@ class ShotDetector:
         print("[INFO] Shot detector goal openings ready: {}".format(
             ", ".join(sorted(openings.keys()))))
 
-    def update(self, frame_num: int, match_time_s: float, poses, tracker) -> List[ShotEvent]:
+    def update(self, frame_num: int, match_time_s: float, poses, tracker,
+               hive_moving=None) -> List[ShotEvent]:
+        """hive_moving: optional callable(color) -> bool, True while that
+        HIVE is tipping (balls inside it then move and must not count as
+        launches)."""
         if not self._ready or tracker._last_ball_mask is None or tracker._H_inv is None:
             return []
+        self._hive_moving = hive_moving
 
         detections = self._extract_ball_detections(tracker._last_ball_mask)
         robot_refs = self._robot_refs(poses, tracker)
@@ -261,12 +269,27 @@ class ShotDetector:
                 track.goal_color = color
                 break
 
+    def _starts_in_moving_goal(self, track: BallTrack) -> bool:
+        moving = getattr(self, "_hive_moving", None)
+        first = track.first_point
+        if moving is None or first is None:
+            return False
+        _f, x, y = first
+        return any(
+            self.cv2.pointPolygonTest(poly, (float(x), float(y)), False) >= 0 and moving(color)
+            for color, poly in self._goal_openings.items()
+        )
+
     def _maybe_mark_launched(self, track: BallTrack, robot_refs) -> None:
         if track.launched or len(track.samples) < self.SHOT_MIN_LIFE_FRAMES:
             return
         first = track.first_point
         last = track.last_point
         if first is None or last is None:
+            return
+        # Balls first seen inside a HIVE while it tips are balls in the
+        # moving CELLS (or falling out), not launches.
+        if self._starts_in_moving_goal(track):
             return
         shooter_ref, shooter_score = self._select_shooter(track, robot_refs)
         if shooter_ref is None or shooter_score > self._px(self.SHOT_MAX_START_DIST_PX):

@@ -30,6 +30,19 @@ BALL_HSV_RANGES = [
 # hive_boxes_px and the detector has to find the HIVES by color.
 HIVE_SIDES = {"red": "left", "blue": "right"}
 
+# Alliance colors of the HIVE structures (OpenCV HSV), used by HIVE tip
+# detection (autoscout/hive.py).
+HIVE_HSV_RANGES = {
+    "red": [((0, 90, 45), (12, 255, 255)), ((170, 90, 45), (179, 255, 255))],
+    "blue": [((95, 80, 45), (135, 255, 255))],
+}
+
+# FTC match timing (seconds from match start) used to label events:
+# 30 s autonomous, 8 s transition, 2:00 teleop.
+AUTO_END_S = 30.0
+TELEOP_START_S = 38.0
+MATCH_END_S = 158.0
+
 # ── Tracker behavior switches ───────────────────────────────────────────────
 # DECODE-only: suppress blobs in the two far corners (field structures there).
 CORNER_ZONE_SUPPRESSION = False
@@ -76,3 +89,11 @@ STATIC_SUPPRESS_SPARES_LOST_TRACKS = True
 # instead of feeding the jump into its velocity, which otherwise throws the
 # next prediction far off and loses the robot again. False = previous behavior.
 RESET_VELOCITY_ON_JUMP = True
+
+# Robot blob sizes. The tracker decides how many robots a blob contains by
+# comparing its area with an 18 in square at that spot. Real robots on angled,
+# blurry video often look much smaller than that (about 0.6x on the Piper
+# Meet stream), so two touching robots never reached the 2-robot threshold.
+# With True, the tracker measures the typical single-robot blob at
+# initialization and scales the thresholds by it (clamped to 0.3-1.2).
+AUTO_ROBOT_AREA = True

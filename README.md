@@ -109,6 +109,25 @@ python3 tools/calibrate.py path/to/match.mp4
 
 That produces a `field_corners.json` file. Pass it to `auto_scout.py` with `--corners`. Recalibrate whenever the camera angle or crop changes.
 
+## Season: BIOBUZZ (2026-2027)
+AutoScout is configured for BIOBUZZ presented by RTX. Game-specific settings live in `autoscout/season.py`:
+
+- shots are POLLEN (yellow balls) launched into the red / blue HIVE; NECTAR and FLOWERS are not tracked
+- `robotN_shot_goal` is the HIVE color (`red` or `blue`)
+- the tracker is set up for the typical low, audience-side BIOBUZZ camera: robot size varies with field position (`PERSPECTIVE_ROBOT_SCALE`) and positions use the robot's floor-contact point (`FOOT_OFFSET_FRAC`)
+- robots that start hidden (for example behind the HIVE) are picked up when they appear
+- the visualizer uses `assets/biobuzz-field.png`, oriented as the camera sees the field (red on the left, far wall on top)
+
+For best results, draw the HIVE boxes and an exclusion box over the on-screen clock when calibrating:
+
+```bash
+python3 tools/calibrate.py path/to/match.mp4
+```
+
+Drag the 4 corners, press `H` and click two opposite corners for the red HIVE then the blue HIVE, press `X` and click two corners around the clock, then press `S`.
+
+The broadcast-timer match bounds detector (`--auto-match-bounds`) was built for the DECODE overlay; use `--start-offset` for BIOBUZZ videos until it is updated.
+
 ## Repository Layout
 
 - `auto_scout.py`
@@ -117,7 +136,7 @@ That produces a `field_corners.json` file. Pass it to `auto_scout.py` with `--co
   Starts the local dashboard web server.
 - `autoscout/`
   Main Python package for the tracker internals.
-  Includes `tracker.py`, `shot.py`, `runtime.py`, `geometry.py`, `models.py`, `helpers.py`, `wpilog.py`, `ftc_events.py`, `hardware.py`, and `dashboard_server.py`.
+  Includes `season.py`, `tracker.py`, `shot.py`, `runtime.py`, `geometry.py`, `models.py`, `helpers.py`, `wpilog.py`, `ftc_events.py`, `hardware.py`, and `dashboard_server.py`.
 - `dashboard_static/`
   No-build dashboard front-end files served by `dashboard_server.py`.
 - `util/`

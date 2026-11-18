@@ -28,7 +28,7 @@ The repo currently contains several user-facing tools:
 - `auto_scout.py`: runnable tracker entrypoint, exports, and CLI.
 - `dashboard_server.py`: starts the local dashboard server.
 - `autoscout/`: tracker implementation package.
-  Includes `tracker.py`, `shot.py`, `runtime.py`, `geometry.py`, `models.py`, `helpers.py`, `wpilog.py`, `ftc_events.py`, `hardware.py`, and `dashboard_server.py`.
+  Includes `season.py`, `tracker.py`, `shot.py`, `runtime.py`, `geometry.py`, `models.py`, `helpers.py`, `wpilog.py`, `ftc_events.py`, `hardware.py`, and `dashboard_server.py`.
 - `dashboard_static/`: no-build dashboard front-end assets served locally by the Python dashboard server.
 - `util/`: shared cross-tool helpers.
   Includes `juice_log.py` and `jlog.js`.
@@ -202,8 +202,9 @@ Most implementation details now live in `autoscout/`.
 
 ### `autoscout/` package layout
 
+- `autoscout/season.py`: game-specific settings for the current season (BIOBUZZ): ball colors, HIVE sides, field image, and camera-geometry switches. Start here when adapting to a new game.
 - `autoscout/tracker.py`: `RobotTracker`, foreground segmentation, blob extraction, assignment, merge handling, and track-state updates.
-- `autoscout/shot.py`: `ShotDetector`, ball-track association, goal opening detection, and shot resolution.
+- `autoscout/shot.py`: `ShotDetector`, ball-track association, HIVE target detection, and shot resolution.
 - `autoscout/helpers.py`: `FieldDetector`, manual re-ID loading, homography helper functions, and debug-wireframe helpers.
 - `autoscout/runtime.py`: styled terminal printing, progress-bar coordination, and lazy dependency loading.
 - `autoscout/geometry.py`: field coordinate conversion helpers and angle normalization.
@@ -583,6 +584,14 @@ This value drives a lot of later thresholds:
 - appearance crop size
 - wireframe debug hitboxes
 
+#### Perspective scale and floor-contact point (`season.py`)
+
+For low, angled cameras (BIOBUZZ broadcasts) one center-field size is not enough: a robot near the camera can look 2-3x larger than one at the far wall. With `PERSPECTIVE_ROBOT_SCALE = True` the tracker computes the 18 in size at each blob's or track's own field position (clamped to `LOCAL_SCALE_MIN_FRAC`..`LOCAL_SCALE_MAX_FRAC` of the center size) and uses it for the expected robot count, the minimum blob area (`BLOB_MIN`, scaled down for far robots but never below `BLOB_MIN_SCALE_FLOOR`), the blob quality penalty, the assignment image-distance terms and gates, merge priors, and the merge-exit relabeling. Morphology kernels and the appearance crop still use the center size.
+
+On angled cameras the center of a robot's silhouette sits above its footprint, which pushes projected positions toward the far wall. `FOOT_OFFSET_FRAC` moves each blob or peak center down by that fraction of the local robot size (never below the blob's bottom edge) before projecting it to the field. The inverse (`RobotTracker.field_to_image`) is used wherever a field position is projected back into the image. Debug overlays draw robots at the floor-contact point.
+
+Set `PERSPECTIVE_ROBOT_SCALE = False` and `FOOT_OFFSET_FRAC = 0.0` for near-overhead cameras. With those, the DECODE ball colors, corner suppression on, and partial initialization disabled (`INIT_PARTIAL_AFTER_FRAMES` very large), robot tracking reproduces the previous DECODE results exactly.
+
 ### 6. Foreground extraction
 
 Foreground is computed from the current frame and the background:
@@ -599,21 +608,12 @@ The neck-breaking step is specifically there to separate thin bridges in merged 
 
 ### 7. Ball removal
 
-FTC game pieces can look like small robot blobs, so the tracker removes color regions matching configured HSV bands:
+FTC game pieces can look like small robot blobs, so the tracker removes color regions matching the HSV bands in `season.BALL_HSV_RANGES` (BIOBUZZ: yellow POLLEN only; NECTAR is red/blue like alliance markers and is deliberately not removed).
 
-- green balls
-- purple balls
+Two masks are built from those colors:
 
-Ball masks are:
-
-- thresholded in HSV
-- opened and closed with size-scaled kernels
-- filtered by projected field area
-- dilated slightly before subtraction
-
-The final foreground mask subtracts this ball mask.
-
-That same ball-color mask is also reused by the shot detector. Robot tracking removes balls from foreground segmentation, while shot detection separately tracks those colored ball blobs in image space.
+1. Robot-suppression mask (`_last_ball_suppress_mask`): ball-colored pixels on the field, opened and closed with size-scaled kernels, filtered by projected field area, and dilated slightly. The robot foreground subtracts this mask.
+2. Shot mask (`_last_ball_mask`): ball-colored pixels that also differ from the median background by more than `BALL_MOTION_THRESH` (so static yellow such as FLOWER rings, POLLEN piles and the HIVE frame panel is ignored), inside the shot region, lightly closed (`BALL_SHOT_CLOSE_PX`). The shot region is the field plus the space above the far wall around the HIVES (the convex hull of the far corners and the HIVE boxes when they are calibrated, otherwise everything above the far wall), minus exclusion areas. This mask feeds the shot detector.
 
 ### 8. Contour extraction and field-area filtering
 
@@ -677,13 +677,19 @@ This is aimed at stationary field structures and other static artifacts.
 
 ### 12. Corner-zone suppression
 
-Top corner field elements can create persistent false blobs. The tracker suppresses detections in two 22-inch top-corner squares unless a currently active robot is already nearby.
+DECODE only (`season.CORNER_ZONE_SUPPRESSION`, off for BIOBUZZ). Top corner field elements can create persistent false blobs. The tracker suppresses detections in two 22-inch top-corner squares unless a currently active robot is already nearby.
 
 This reduces the common failure mode where a track gets pulled into a corner post.
+
+### 12b. HIVE boxes and exclusion areas
+
+If `field_corners.json` contains `hive_boxes_px` and/or `exclude_px`, those image polygons are removed from the field mask, so robots are never detected inside them. This keeps a tipping HIVE and the ticking on-screen clock from turning into false robots. HIVE boxes are also the shot detector's targets. A robot driving behind the HIVE simply disappears for a while and is reacquired (it coasts like any other occlusion).
 
 ### 13. Track initialization
 
 Until the tracker is initialized, it waits for at least four candidate blobs, then chooses the best four-blob lineup from up to `INIT_MAX_CANDIDATES = 8` candidates.
+
+Robots can start hidden (for example behind the HIVE). If fewer than four blobs are visible after `season.INIT_PARTIAL_AFTER_FRAMES` processed frames, the tracker starts with the best lineup of the visible blobs (at least `season.INIT_MIN_ROBOTS`). The remaining robot IDs stay unseen until a clean, unsplit blob appears at least 1.5 robot widths (27 in) away from every known robot; that blob is then claimed by the lowest unseen ID (logged as `Track N acquired`). Robot IDs are still left-to-right among the robots visible at initialization; hidden robots get the highest IDs.
 
 Scoring:
 
@@ -882,8 +888,8 @@ The tracker now includes a separate heuristic shot detector built on top of the 
 
 At a high level:
 
-1. Detect the red and blue goal openings from the static background image.
-2. Detect purple/green ball blobs from the per-frame ball mask.
+1. Get the red and blue HIVE targets: the `hive_boxes_px` polygons from calibration (recommended), or, without them, a color search in the median background (see below).
+2. Detect moving ball-colored blobs (BIOBUZZ: yellow POLLEN) from the per-frame shot mask.
 3. Track those ball blobs in image space with nearest-neighbor association.
 4. Mark a blob as a launched shot only if it:
    starts near a visible robot,
@@ -891,8 +897,12 @@ At a high level:
    moves fast enough,
    and moves upward toward the goals.
 5. Resolve the launched shot as:
-   `made` if the tracked ball enters a goal-opening polygon and then disappears,
-   `missed` if it clearly approaches the goal region but never enters the opening before disappearing.
+   `made` if the tracked ball enters a HIVE polygon and then disappears, or enters it and comes to rest there (moves less than `GOAL_SETTLE_PX` per frame for `GOAL_SETTLE_FRAMES` frames — the HIVE cells are clear, so made POLLEN stays visible),
+   `missed` if it clearly approaches the HIVE region but never enters it before disappearing.
+
+Pixel thresholds are written for `REF_FRAME_WIDTH = 640` px video and are scaled to the actual frame width (areas quadratically).
+
+Known limitation of the BIOBUZZ audience-side camera: launches from behind the HIVE into the far cell are often hidden by the HIVE itself, and shots that travel sideways or downward on screen are not treated as launches. Those shots are missed.
 
 Why image space instead of field space:
 
@@ -900,12 +910,13 @@ Why image space instead of field space:
 - the field homography assumes objects lie on the floor plane
 - goal openings are elevated structures, so image-space regions are more stable for scoring than trying to project the ball onto the carpet
 
-How goal openings are found:
+How HIVE targets are found without calibrated boxes:
 
 - on setup, AutoScout looks at the median background
-- it segments large red and blue static structures near the top corners
-- it extracts the upper part of those contours as the effective opening region
-- if that fails, it falls back to coarse polygons derived from the calibrated field corners
+- it searches the top `GOAL_TOP_BAND_FRAC` of the frame, within `GOAL_SEARCH_HALF_WIDTH_FRAC` of the frame width on the side of the projected field center given by `season.HIVE_SIDES`
+- it joins the thin cell outlines with a close (`GOAL_JOIN_KERNEL_PX`) and picks the largest red / blue region whose top is above `GOAL_MAX_TOP_FRAC`
+- the slightly shrunk convex hull of that region is the target
+- if nothing is found, shot detection is disabled with a warning; draw HIVE boxes with `tools/calibrate.py`
 
 What gets written to CSV/JLOG:
 
@@ -936,8 +947,10 @@ What it does:
 
 - opens a chosen frame, defaulting to the middle frame of the video
 - displays four draggable corners
+- lets you draw a box around each HIVE and any number of exclusion rectangles
 - lets you zoom and pan
-- writes `{"corners_px": [bl, br, tr, tl]}` on save
+- loads an existing output file so you can adjust it (`--fresh` starts over)
+- writes `corners_px` plus optional `hive_boxes_px` / `exclude_px` on save
 
 Controls:
 
@@ -945,9 +958,15 @@ Controls:
 - mouse wheel: zoom
 - right-drag or middle-drag: pan
 - `R`: reset corners
+- `H`: draw HIVE boxes — two clicks (opposite corners) for the red HIVE, then two for the blue HIVE. Include both cells and the space just around them where POLLEN enters.
+- `X`: add an exclusion rectangle (two clicks) — use it for the on-screen clock and any overlay covering the field
+- `C`: clear exclusion rectangles
+- `B`: clear HIVE boxes
 - `+` / `-`: zoom
 - `Enter` or `S`: save
-- `Esc` or `Q`: quit without saving
+- `Esc` or `Q`: quit without saving (`Esc` cancels a box being drawn)
+
+The browser calibration tool in the dashboard only edits corners; when it saves into a file that already has HIVE boxes / exclusion areas, those are kept.
 
 Internal details:
 
@@ -1081,6 +1100,22 @@ Expected structure:
 ```
 
 This ordering matters. `auto_scout.py` assumes this exact corner order when it rebuilds the homography.
+
+Optional keys (written by `tools/calibrate.py`):
+
+```json
+{
+  "hive_boxes_px": {
+    "red":  [[x, y], [x, y], [x, y], [x, y]],
+    "blue": [[x, y], [x, y], [x, y], [x, y]]
+  },
+  "exclude_px": [
+    [[x, y], [x, y], [x, y], [x, y]]
+  ]
+}
+```
+
+Both are image-pixel polygons (3 or more points). `hive_boxes_px` are the shot targets and are removed from robot detection; `exclude_px` areas are ignored entirely.
 
 ## `robot-init-positions`
 

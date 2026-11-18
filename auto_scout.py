@@ -14,6 +14,7 @@ from autoscout.helpers import (
     _draw_wire_cube,
     _open_debug_video_writer,
 )
+from autoscout import season
 from autoscout.match_timer import scan_match_bounds
 from autoscout.runtime import _make_bar, _require, install_console_output
 from autoscout.shot import ShotDetector
@@ -123,6 +124,7 @@ def process_match(
     robot_init_positions=None,
     manual_reference_csv=None,
     auto_match_bounds=False,
+    calibration_extras=None,
 ):
     cv2 = _require("cv2", "opencv-python")
     np = _require("numpy")
@@ -273,7 +275,7 @@ def process_match(
         dst2d = np.array([[0, 0], [144, 0], [144, 144], [0, 144]], dtype=np.float32)
         H_2d, _ = cv2.findHomography(ordered, dst2d)
         H_inv = np.linalg.inv(H_2d)
-        tracker.setup(video_path, ordered, frame_shape)
+        tracker.setup(video_path, ordered, frame_shape, calibration_extras)
         shot_detector.setup(tracker)
         print("[INFO] Using manual field corners.")
         _emit_dashboard_stage("Calibrating Trackers", "completed", "Using manual field corners")
@@ -296,9 +298,8 @@ def process_match(
             fx_center = float(item[0])
             fy_center = float(item[1])
             fx, fy = _field_center_to_corner_xy(fx_center, fy_center)
-            pt = np.array([[[fx, fy]]], dtype=np.float32)
-            ip = cv2.perspectiveTransform(pt, H_inv)[0][0]
-            lineup.append((fx, fy, float(ip[0]), float(ip[1])))
+            ipx, ipy = tracker.field_to_image(fx, fy)
+            lineup.append((fx, fy, ipx, ipy))
         tracker._initialize_tracks_from_lineup(lineup, "manual --robot-init-positions")
 
     if manual_reference_csv:
@@ -360,7 +361,7 @@ def process_match(
             if result is not None:
                 ordered, H_2d = result
                 H_inv = np.linalg.inv(H_2d)
-                tracker.setup(video_path, ordered, frame.shape)
+                tracker.setup(video_path, ordered, frame.shape, calibration_extras)
                 shot_detector.setup(tracker)
                 print("\n  [t={:.1f}s] Field auto-detected.".format(match_time_s))
                 calibration_completed = True
@@ -424,6 +425,8 @@ def process_match(
                 cv2.polylines(dbg, [ordered.astype(np.int32).reshape(-1, 1, 2)],
                               True, (0, 200, 0), 2)
                 shot_detector.draw_debug(dbg)
+            for ex_poly in tracker.exclude_polys:
+                cv2.polylines(dbg, [ex_poly], True, (128, 128, 128), 1, cv2.LINE_AA)
 
             if tracker._bg is not None:
                 fg_debug = tracker._foreground_mask(frame)
@@ -435,7 +438,7 @@ def process_match(
                         cv2.CHAIN_APPROX_SIMPLE,
                     )
                     for contour in ball_cnts:
-                        if cv2.contourArea(contour) >= 20:
+                        if cv2.contourArea(contour) >= 2:
                             cv2.drawContours(dbg, [contour], -1, (255, 0, 255), 1)
                 for contour in all_cnts:
                     area = cv2.contourArea(contour)
@@ -578,7 +581,7 @@ def _print_instructions():
 +------------------------------------------------------------------+
 |  1. Open AdvantageScope                                          |
 |  2. File > Open Log(s) ... > select match_log.wpilog             |
-|  3. "+" tab -> 2D Field -> set Field to FTC DECODE season        |
+|  3. "+" tab -> 2D Field -> set Field to FTC BIOBUZZ season       |
 |  4. Drag Robot0/Pose into Poses                                  |
 |  5. Click icon LEFT of the field name ->                         |
 |       Format: Pose2d   Units: Meters + Radians                   |
@@ -721,7 +724,7 @@ def download_video(url, output_dir):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Track FTC DECODE robots from a match video.")
+        description="Track FTC {} robots from a match video.".format(season.GAME_NAME))
     parser.add_argument("url", nargs="?", help="YouTube URL")
     parser.add_argument("--output-dir", default="./output")
     parser.add_argument("--start-offset", type=float, default=0.0,
@@ -741,7 +744,7 @@ def main():
     parser.add_argument("--no-download", action="store_true")
     parser.add_argument("--video-path", default=None)
     parser.add_argument("--corners", default=None,
-                        help="field_corners.json from ftc_calibrate.py")
+                        help="field_corners.json from tools/calibrate.py (may also hold hive_boxes_px / exclude_px)")
     parser.add_argument("--robot-init-positions", default=None,
                         help=(
                             "JSON file or inline JSON string with starting field positions "
@@ -774,9 +777,16 @@ def main():
 
     print("[INFO] Output:", args.output_dir)
     corners = None
+    calibration_extras = None
     if args.corners:
         with open(args.corners) as file:
-            corners = json.load(file)["corners_px"]
+            calibration = json.load(file)
+        corners = calibration["corners_px"]
+        calibration_extras = {
+            key: calibration[key]
+            for key in ("hive_boxes_px", "exclude_px")
+            if key in calibration
+        }
         print("[INFO] Corners:", args.corners)
 
     robot_init = None
@@ -802,6 +812,7 @@ def main():
         robot_init_positions=robot_init,
         manual_reference_csv=args.manual_reference_csv,
         auto_match_bounds=args.auto_match_bounds,
+        calibration_extras=calibration_extras,
     )
 
 

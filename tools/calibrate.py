@@ -10,8 +10,18 @@ Controls:
     - Scroll wheel or +/- keys to zoom in/out
     - Middle-click drag (or right-click drag) to pan
     - R         — reset corners to default positions
+    - H         — draw HIVE boxes: click two opposite corners for the red
+                  HIVE, then two for the blue HIVE. Include the cells and the
+                  space just above/around them where balls fly in.
+    - X         — add an exclusion rectangle (two clicks), e.g. around the
+                  on-screen clock or any overlay covering the field
+    - C         — clear all exclusion rectangles
+    - B         — clear both HIVE boxes
     - ENTER / S — save and exit
-    - ESC / Q   — quit without saving
+    - ESC / Q   — quit without saving (ESC cancels a box being drawn)
+
+If the output file already exists, its corners, HIVE boxes and exclusion
+areas are loaded so you can adjust them (use --fresh to start over).
 
 The 4 corners are color-coded:
     TL = yellow  (top-left  of field)
@@ -20,12 +30,15 @@ The 4 corners are color-coded:
     BL = blue    (bottom-left of field)
 
 Output JSON format (compatible with auto_scout.py --corners):
-    {"corners_px": [[bl_x, bl_y], [br_x, br_y], [tr_x, tr_y], [tl_x, tl_y]]}
+    {"corners_px": [[bl_x, bl_y], [br_x, br_y], [tr_x, tr_y], [tl_x, tl_y]],
+     "hive_boxes_px": {"red": [[x,y] x4], "blue": [[x,y] x4]},   # optional
+     "exclude_px": [[[x,y] x4], ...]}                             # optional
 """
 
 import argparse
 import json
 import math
+import os
 import sys
 
 def _require(package, pip_name=None):
@@ -85,13 +98,28 @@ POINT_RADIUS = 10
 DRAG_RADIUS  = 18   # how close cursor must be to start a drag
 
 
+def _rect_to_poly(p0, p1):
+    x0, x1 = sorted((int(p0[0]), int(p1[0])))
+    y0, y1 = sorted((int(p0[1]), int(p1[1])))
+    return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+
+
 class CornerEditor:
-    def __init__(self, frame, corners):
+    def __init__(self, frame, corners, hive_boxes=None, excludes=None):
         self.cv2     = _require("cv2", "opencv-python")
         self.np      = _require("numpy")
         self.orig    = frame.copy()
         self.corners = [list(c) for c in corners]  # [[x,y], ...]
         self.h, self.w = frame.shape[:2]
+
+        # Extra calibration shapes (image pixel polygons)
+        self.hive_boxes = dict(hive_boxes or {})     # {"red": [[x,y]x4], "blue": ...}
+        self.excludes   = [list(p) for p in (excludes or [])]
+        # Rectangle drawing state: queue of targets still to draw, e.g.
+        # [("hive", "red"), ("hive", "blue")] or [("exclude", None)]
+        self.rect_queue = []
+        self.rect_first = None
+        self.mouse_img  = (0, 0)
 
         # Viewport state (for zoom/pan)
         self.zoom    = 1.0
@@ -133,6 +161,25 @@ class CornerEditor:
     def _mouse_cb(self, event, vx, vy, flags, param):
         cv2 = self.cv2
         ix, iy = self._view_to_img(vx, vy)
+
+        if event == cv2.EVENT_MOUSEMOVE:
+            self.mouse_img = (ix, iy)
+
+        if event == cv2.EVENT_LBUTTONDOWN and self.rect_queue:
+            x, y = self._clamp_corner(int(ix), int(iy))
+            if self.rect_first is None:
+                self.rect_first = (x, y)
+            else:
+                poly = _rect_to_poly(self.rect_first, (x, y))
+                kind, color = self.rect_queue.pop(0)
+                if kind == "hive":
+                    self.hive_boxes[color] = poly
+                    print("[INFO] {} HIVE box set.".format(color))
+                else:
+                    self.excludes.append(poly)
+                    print("[INFO] Exclusion area added ({} total).".format(len(self.excludes)))
+                self.rect_first = None
+            return
 
         if event == cv2.EVENT_LBUTTONDOWN:
             # Check if clicking near a corner
@@ -224,11 +271,37 @@ class CornerEditor:
             cv2.putText(display, coord_str, (vp[0] + POINT_RADIUS + 4, vp[1] + 5),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
 
+        # HIVE boxes and exclusion areas
+        box_colors = {"red": (40, 40, 255), "blue": (255, 120, 40)}
+        for color, poly in self.hive_boxes.items():
+            pts = np.array([self._img_to_view(*p) for p in poly], dtype=np.int32)
+            cv2.polylines(display, [pts], True, box_colors.get(color, (255, 255, 255)), 2, cv2.LINE_AA)
+            cv2.putText(display, "{} HIVE".format(color), (int(pts[0][0]) + 3, int(pts[0][1]) + 16),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, box_colors.get(color, (255, 255, 255)), 1)
+        for poly in self.excludes:
+            pts = np.array([self._img_to_view(*p) for p in poly], dtype=np.int32)
+            overlay = display.copy()
+            cv2.fillPoly(overlay, [pts], (40, 40, 40))
+            cv2.addWeighted(overlay, 0.5, display, 0.5, 0, display)
+            cv2.polylines(display, [pts], True, (160, 160, 160), 1, cv2.LINE_AA)
+        if self.rect_queue and self.rect_first is not None:
+            preview = _rect_to_poly(self.rect_first, self.mouse_img)
+            pts = np.array([self._img_to_view(*p) for p in preview], dtype=np.int32)
+            cv2.polylines(display, [pts], True, (0, 255, 255), 1, cv2.LINE_AA)
+
         # HUD
+        if self.rect_queue:
+            kind, color = self.rect_queue[0]
+            what = "{} HIVE box".format(color) if kind == "hive" else "exclusion area"
+            step = "first corner" if self.rect_first is None else "opposite corner"
+            mode_line = "Drawing {}: click {}  (ESC cancels)".format(what, step)
+        else:
+            mode_line = "H = HIVE boxes  |  X = exclusion box  |  C/B = clear excl./HIVEs"
         lines = [
             "Drag corners to field boundaries",
             "Scroll to zoom  |  Right-drag to pan",
             "R = reset  |  ENTER/S = save  |  ESC/Q = quit",
+            mode_line,
             f"Zoom: {self.zoom:.1f}x",
         ]
         for j, line in enumerate(lines):
@@ -253,9 +326,27 @@ class CornerEditor:
             if key in (13, ord('s'), ord('S')):   # ENTER or S
                 self.saved = True
                 break
+            elif key == 27 and self.rect_queue:   # ESC while drawing a box
+                self.rect_queue = []
+                self.rect_first = None
+                print("[INFO] Box drawing cancelled.")
             elif key in (27, ord('q'), ord('Q')): # ESC or Q
                 self.quit_nosave = True
                 break
+            elif key in (ord('h'), ord('H')):
+                self.rect_queue = [("hive", "red"), ("hive", "blue")]
+                self.rect_first = None
+                print("[INFO] Click two opposite corners for the red HIVE, then the blue HIVE.")
+            elif key in (ord('x'), ord('X')):
+                self.rect_queue = [("exclude", None)]
+                self.rect_first = None
+                print("[INFO] Click two opposite corners of the area to exclude.")
+            elif key in (ord('c'), ord('C')):
+                self.excludes = []
+                print("[INFO] Exclusion areas cleared.")
+            elif key in (ord('b'), ord('B')):
+                self.hive_boxes = {}
+                print("[INFO] HIVE boxes cleared.")
             elif key in (ord('r'), ord('R')):
                 self.corners = default_corners(self.w, self.h)
                 print("[INFO] Corners reset to defaults.")
@@ -284,13 +375,29 @@ def main():
                         help="Output JSON file path (default: field_corners.json)")
     parser.add_argument("--frame", "-f", type=int, default=None,
                         help="Frame number to display (default: middle frame)")
+    parser.add_argument("--fresh", action="store_true",
+                        help="Ignore an existing output file and start from default corners")
     args = parser.parse_args()
 
     frame = get_middle_frame(args.video, args.frame)
     h, w  = frame.shape[:2]
     corners = default_corners(w, h)
+    hive_boxes, excludes = {}, []
+    if not args.fresh and os.path.exists(args.output):
+        try:
+            with open(args.output) as f:
+                existing = json.load(f)
+            saved = existing.get("corners_px")
+            if saved and len(saved) == 4:
+                bl, br, tr, tl = saved
+                corners = [list(tl), list(tr), list(br), list(bl)]
+            hive_boxes = existing.get("hive_boxes_px") or {}
+            excludes = existing.get("exclude_px") or []
+            print("[INFO] Loaded existing calibration from {}".format(args.output))
+        except (OSError, ValueError) as exc:
+            print("[WARN] Could not read {}: {}".format(args.output, exc))
 
-    editor  = CornerEditor(frame, corners)
+    editor  = CornerEditor(frame, corners, hive_boxes, excludes)
     result  = editor.run()
 
     if result is None:
@@ -303,6 +410,10 @@ def main():
     # Save in the format auto_scout.py --corners expects:
     # {"corners_px": [bl, br, tr, tl]}
     data = {"corners_px": [bl, br, tr, tl]}
+    if editor.hive_boxes:
+        data["hive_boxes_px"] = editor.hive_boxes
+    if editor.excludes:
+        data["exclude_px"] = editor.excludes
     with open(args.output, "w") as f:
         json.dump(data, f, indent=2)
 
@@ -311,6 +422,8 @@ def main():
     print(f"  TR = {tr}")
     print(f"  BR = {br}")
     print(f"  BL = {bl}")
+    print(f"  HIVE boxes: {', '.join(sorted(editor.hive_boxes)) or 'none (press H to draw them)'}")
+    print(f"  Exclusion areas: {len(editor.excludes)}")
     print(f"\nRun your tracker with:")
     print(f"  python3 auto_scout.py --no-download --video-path <video> --corners {args.output}")
 

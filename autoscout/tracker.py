@@ -3,6 +3,7 @@ import math
 from collections import defaultdict
 from typing import Dict, FrozenSet, List, Optional, Tuple
 
+from autoscout import season
 from autoscout.models import MergeGroup, RobotPose
 from autoscout.runtime import _make_bar
 
@@ -33,11 +34,18 @@ class RobotTracker:
     MERGE_PRIOR_MIN_SEP = 0.35
     BLOB_MIN_FIELD_AREA_IN2 = 40.0  # Lowered from 55: more permissive for far-wall robots
     BALL_FILTER_ENABLED = True
-    BALL_GREEN_HSV_LO = (50, 95, 80)
-    BALL_GREEN_HSV_HI = (100, 255, 255)
-    BALL_PURPLE_HSV_LO = (132, 80, 70)
-    BALL_PURPLE_HSV_HI = (165, 255, 255)
+    # Scoring-element colors come from season.py (BIOBUZZ: yellow POLLEN).
+    BALL_HSV_RANGES = season.BALL_HSV_RANGES
     BALL_MIN_FIELD_AREA_IN2 = 2.0
+    # Shot-detection ball mask: a pixel counts as a moving ball when it has
+    # the ball color AND differs from the median background by this much.
+    BALL_MOTION_THRESH = 25
+    BALL_SHOT_CLOSE_PX = 3   # small fixed close kernel; 0/1 disables
+    # Perspective robot scale is clamped to this range (x center-field size).
+    LOCAL_SCALE_MIN_FRAC = 0.35
+    LOCAL_SCALE_MAX_FRAC = 3.0
+    # BLOB_MIN shrinks for far robots, but never below this fraction of it.
+    BLOB_MIN_SCALE_FLOOR = 0.2
     BALL_MASK_OPEN_FRAC = 0.030
     BALL_MASK_CLOSE_FRAC = 0.055
     BALL_MASK_DILATE_FRAC = 0.070
@@ -81,7 +89,12 @@ class RobotTracker:
         self._merge_groups: Dict[FrozenSet, MergeGroup] = {}
         self._underresolved_tracks = set()
         self._post_merge_locks = [None] * 4
-        self._last_ball_mask = None
+        self._last_ball_mask = None            # moving-ball mask (shot detection)
+        self._last_ball_suppress_mask = None   # ball mask removed from robot FG
+        self._shot_region_mask = None
+        self.hive_boxes: Dict[str, object] = {}   # color -> int32 polygon (N,1,2)
+        self.exclude_polys: List[object] = []
+        self._init_wait_frames = 0
         self._reid_refs: Optional[Dict[int, List]] = None
         # Static blob suppression: track per-blob pixel location history
         # Format: {approx_pixel_key: consecutive_static_frames}
@@ -101,9 +114,32 @@ class RobotTracker:
 
     # ── setup ────────────────────────────────────────────────────────────
 
-    def setup(self, video_path, ordered_corners, frame_shape):
+    def setup(self, video_path, ordered_corners, frame_shape, calibration_extras=None):
+        """
+        calibration_extras (optional, from field_corners.json):
+          hive_boxes_px : {"red": [[x,y],...], "blue": [[x,y],...]}
+                          image polygons around each HIVE (scoring targets).
+                          Also removed from robot detection.
+          exclude_px    : [[[x,y],...], ...] image polygons ignored entirely
+                          (on-screen clock, overlays, ...).
+        """
         cv2, np = self.cv2, self.np
         h, w = frame_shape[:2]
+        extras = calibration_extras or {}
+        self.hive_boxes = {}
+        for color, pts in (extras.get("hive_boxes_px") or {}).items():
+            if pts and len(pts) >= 3:
+                self.hive_boxes[str(color)] = np.array(
+                    pts, dtype=np.int32).reshape(-1, 1, 2)
+        self.exclude_polys = [
+            np.array(pts, dtype=np.int32).reshape(-1, 1, 2)
+            for pts in (extras.get("exclude_px") or []) if pts and len(pts) >= 3
+        ]
+        if self.hive_boxes:
+            print("[INFO] HIVE boxes from calibration: {}".format(
+                ", ".join(sorted(self.hive_boxes))))
+        if self.exclude_polys:
+            print("[INFO] Exclusion areas from calibration: {}".format(len(self.exclude_polys)))
 
         tl, tr, br, bl = ordered_corners
         cx_poly = (tl[0]+tr[0]+br[0]+bl[0]) / 4
@@ -121,6 +157,29 @@ class RobotTracker:
         poly = np.array([_pad(*tl), _pad(*tr), _pad(*br), _pad(*bl)], dtype=np.int32)
         self._field_mask = np.zeros((h, w), dtype=np.uint8)
         cv2.fillPoly(self._field_mask, [poly], 255)
+
+        # Region where airborne scoring elements are searched for: the field
+        # plus the space above the far wall where the scoring targets are.
+        shot_region = self._field_mask.copy()
+        p_tl, p_tr = _pad(*tl), _pad(*tr)
+        if self.hive_boxes:
+            hull_pts = [p_tl, p_tr]
+            for box in self.hive_boxes.values():
+                hull_pts.extend([tuple(p) for p in box.reshape(-1, 2)])
+                cv2.fillPoly(shot_region, [box], 255)
+            hull = cv2.convexHull(np.array(hull_pts, dtype=np.int32).reshape(-1, 1, 2))
+            cv2.fillPoly(shot_region, [hull], 255)
+        else:
+            above = np.array([p_tl, p_tr, (p_tr[0], 0), (p_tl[0], 0)], dtype=np.int32)
+            cv2.fillPoly(shot_region, [above], 255)
+        for ex in self.exclude_polys:
+            cv2.fillPoly(shot_region, [ex], 0)
+        self._shot_region_mask = shot_region
+
+        # Robots are never detected inside HIVE boxes (the HIVE tips, which
+        # would look like motion) or inside exclusion areas (clock, overlays).
+        for poly_ex in list(self.hive_boxes.values()) + self.exclude_polys:
+            cv2.fillPoly(self._field_mask, [poly_ex], 0)
 
         dst2d = np.array([[0,0],[144,0],[144,144],[0,144]], dtype=np.float32)
         self._H_2d, _ = cv2.findHomography(ordered_corners, dst2d)
@@ -160,6 +219,103 @@ class RobotTracker:
                     if frames else np.zeros((h, w, 3), dtype=np.uint8))
         print("[INFO] Background ready.")
 
+    # ── perspective helpers ───────────────────────────────────────────────
+
+    def _footprint_px_at_field(self, fx: float, fy: float) -> float:
+        """Pixel size of an 18 in robot footprint centered at field (fx, fy)."""
+        np = self.np
+        half = self.ROBOT_SIZE_IN / 2.0
+        pts = np.array([[
+            [fx - half, fy], [fx + half, fy],
+            [fx, fy - half], [fx, fy + half],
+        ]], dtype=np.float32)
+        img = self.cv2.perspectiveTransform(pts, self._H_inv)[0]
+        sx = math.hypot(img[1][0] - img[0][0], img[1][1] - img[0][1])
+        sy = math.hypot(img[3][0] - img[2][0], img[3][1] - img[2][1])
+        return max(sx, sy)
+
+    def _clamped_scale(self, px: float) -> float:
+        base = max(self._robot_max_px, 1.0)
+        return min(max(px, base * self.LOCAL_SCALE_MIN_FRAC),
+                   base * self.LOCAL_SCALE_MAX_FRAC)
+
+    def _foot_offset_px(self, u: float, v: float) -> float:
+        frac = season.FOOT_OFFSET_FRAC
+        if frac <= 0 or self._H_2d is None:
+            return 0.0
+        if season.PERSPECTIVE_ROBOT_SCALE:
+            fp = self._raw_image_to_field(u, v)
+            fx = min(max(fp[0], 0.0), 144.0)
+            fy = min(max(fp[1], 0.0), 144.0)
+            scale = self._clamped_scale(self._footprint_px_at_field(fx, fy))
+        else:
+            scale = self._robot_max_px
+        return frac * scale
+
+    def _raw_image_to_field(self, u: float, v: float) -> Tuple[float, float]:
+        pt = self.np.array([[[u, v]]], dtype=self.np.float32)
+        fp = self.cv2.perspectiveTransform(pt, self._H_2d)[0][0]
+        return float(fp[0]), float(fp[1])
+
+    def _image_to_field(self, u: float, v: float, bottom_v: Optional[float] = None) -> Tuple[float, float]:
+        """
+        Project a blob/peak center to the field, using the robot's estimated
+        floor-contact point (center moved down by FOOT_OFFSET_FRAC * local
+        robot size, never below the blob's bottom edge).
+        """
+        foot_v = v + self._foot_offset_px(u, v)
+        if bottom_v is not None:
+            foot_v = max(v, min(foot_v, float(bottom_v)))
+        return self._raw_image_to_field(u, foot_v)
+
+    def field_to_image(self, fx: float, fy: float) -> Tuple[float, float]:
+        """Field position (corner-origin inches) -> image point at the robot's
+        visual center (inverse of _image_to_field)."""
+        pt = self.np.array([[[fx, fy]]], dtype=self.np.float32)
+        ip = self.cv2.perspectiveTransform(pt, self._H_inv)[0][0]
+        u, v = float(ip[0]), float(ip[1])
+        frac = season.FOOT_OFFSET_FRAC
+        if frac > 0:
+            if season.PERSPECTIVE_ROBOT_SCALE:
+                scale = self._clamped_scale(self._footprint_px_at_field(
+                    min(max(fx, 0.0), 144.0), min(max(fy, 0.0), 144.0)))
+            else:
+                scale = self._robot_max_px
+            v -= frac * scale
+        return u, v
+
+    def _robot_px_at(self, u: float, v: float) -> float:
+        """18 in robot size in pixels for a robot whose visual center is at
+        image (u, v). Falls back to the single center-field size."""
+        if not season.PERSPECTIVE_ROBOT_SCALE or self._H_2d is None:
+            return self._robot_max_px
+        fx, fy = self._image_to_field(u, v)
+        fx = min(max(fx, 0.0), 144.0)
+        fy = min(max(fy, 0.0), 144.0)
+        return self._clamped_scale(self._footprint_px_at_field(fx, fy))
+
+    def _contour_robot_px(self, contour) -> float:
+        if contour is None or not season.PERSPECTIVE_ROBOT_SCALE:
+            return self._robot_max_px
+        M = self.cv2.moments(contour)
+        if M["m00"] <= 0:
+            return self._robot_max_px
+        return self._robot_px_at(M["m10"] / M["m00"], M["m01"] / M["m00"])
+
+    def _track_robot_px(self, track_id: int) -> float:
+        if not season.PERSPECTIVE_ROBOT_SCALE:
+            return self._robot_max_px
+        if self._pos[track_id] is None and self._pos_px[track_id] is None:
+            return self._robot_max_px
+        px, py = self._predict_image_pos(track_id)
+        return self._robot_px_at(px, py)
+
+    def _blob_min_area(self, contour) -> float:
+        if not season.PERSPECTIVE_ROBOT_SCALE:
+            return float(self.BLOB_MIN)
+        ratio = self._contour_robot_px(contour) / max(self._robot_max_px, 1.0)
+        return self.BLOB_MIN * min(1.0, max(ratio * ratio, self.BLOB_MIN_SCALE_FLOOR))
+
     # ── main update ───────────────────────────────────────────────────────
 
     def update(self, frame, _H=None):
@@ -188,12 +344,23 @@ class RobotTracker:
         self._underresolved_tracks = self._find_underresolved_tracks(blobs)
 
         if not self._initialized:
+            self._init_wait_frames += 1
             lineup = self._select_bootstrap_lineup(blobs)
+            reason = "best visible 4-blob lineup"
+            if (lineup is None
+                    and self._init_wait_frames >= season.INIT_PARTIAL_AFTER_FRAMES
+                    and len(blobs) >= season.INIT_MIN_ROBOTS):
+                # Some robots are hidden (e.g. behind the HIVE). Start with the
+                # visible ones; the others are picked up when they appear.
+                count = min(len(blobs), 4)
+                lineup = self._select_bootstrap_lineup(blobs, count=count)
+                reason = "partial {}-blob lineup ({} robot(s) not visible yet)".format(
+                    count, 4 - count)
             if lineup is None:
                 for p in self.tracked_poses:
                     p.visible = False
                 return self.tracked_poses
-            self._initialize_tracks_from_lineup(lineup, "best visible 4-blob lineup")
+            self._initialize_tracks_from_lineup(lineup, reason)
             return self.tracked_poses
 
         assignment = self._assign(blobs)
@@ -247,9 +414,7 @@ class RobotTracker:
         for i in range(4):
             if i in multi_merged_peaks:
                 px, py = multi_merged_peaks[i]
-                pt = self.np.array([[[px, py]]], dtype=self.np.float32)
-                fp = self.cv2.perspectiveTransform(pt, self._H_2d)[0][0]
-                fx, fy = float(fp[0]), float(fp[1])
+                fx, fy = self._image_to_field(px, py)
                 self._coast[i] = 0
                 self.tracked_poses[i].x_in = fx
                 self.tracked_poses[i].y_in = fy
@@ -333,9 +498,10 @@ class RobotTracker:
         pred_px_x, pred_px_y = self._predict_image_pos(track_id)
         d_field = math.hypot(float(blob[0]) - pred_field[0], float(blob[1]) - pred_field[1])
         d_img = math.hypot(float(blob[4]) - pred_px_x, float(blob[5]) - pred_px_y)
+        robot_px = self._track_robot_px(track_id)
         cost = (
             d_field / max(self.MAX_REACQ_IN, 1.0)
-            + 0.35 * d_img / max(self._robot_max_px * 1.25, 1.0)
+            + 0.35 * d_img / max(robot_px * 1.25, 1.0)
             + float(blob[6])
             + self._appearance_cost(track_id, blob)
         )
@@ -344,7 +510,7 @@ class RobotTracker:
             lock_img_x, lock_img_y = lock["img_pos"]
             d_lock_img = math.hypot(float(blob[4]) - lock_img_x, float(blob[5]) - lock_img_y)
             cost += self.POST_MERGE_LOCK_WEIGHT * (
-                d_lock_img / max(self._robot_max_px, 1.0))
+                d_lock_img / max(robot_px, 1.0))
             cost += self.POST_MERGE_LOCK_APPEAR_WEIGHT * self._feature_distance(
                 lock.get("feature"),
                 blob[9] if len(blob) > 9 else None,
@@ -404,14 +570,14 @@ class RobotTracker:
         self._initialized = True
         print("[INFO] Tracker initialized from {}.".format(reason))
 
-    def _select_bootstrap_lineup(self, blobs):
-        if len(blobs) < 4:
+    def _select_bootstrap_lineup(self, blobs, count: int = 4):
+        if count <= 0 or len(blobs) < count:
             return None
 
         candidate_pool = blobs[:min(len(blobs), self.INIT_MAX_CANDIDATES)]
         best = None
         best_score = float("inf")
-        for combo in itertools.combinations(candidate_pool, 4):
+        for combo in itertools.combinations(candidate_pool, count):
             lineup = sorted(combo, key=lambda b: b[0])
             spacing_penalty = 0.0
             for left, right in zip(lineup, lineup[1:]):
@@ -435,13 +601,27 @@ class RobotTracker:
         INF       = 1e9
         SKIP_COST = 2.0
 
+        seeded = [t for t in range(4) if self._pos[t] is not None]
         real_cost = np.full((4, max(n, 1)), INF, dtype=np.float64)
         for i in range(4):
             if self._pos[i] is None:
-                real_cost[i, :] = SKIP_COST * 0.9
+                # Track never seen (robot hidden at start, e.g. behind the
+                # HIVE). It may only claim a clean, unsplit blob that is well
+                # away from every known robot.
+                for j, b in enumerate(blobs):
+                    if b[7] != 1 or b[6] >= 0.9:
+                        continue
+                    far = all(
+                        math.hypot(b[0] - self._pos[t][0], b[1] - self._pos[t][1])
+                        >= self.ROBOT_SIZE_IN * 1.5
+                        for t in seeded
+                    )
+                    if far:
+                        real_cost[i, j] = 0.5 + b[6]
                 continue
             pred_x, pred_y = self._predict_field_pos(i)
             pred_px_x, pred_px_y = self._predict_image_pos(i)
+            robot_px = self._track_robot_px(i)
             for j, b in enumerate(blobs):
                 d_field = math.hypot(b[0]-pred_x, b[1]-pred_y)
                 d_img   = math.hypot(b[4]-pred_px_x, b[5]-pred_px_y)
@@ -463,7 +643,7 @@ class RobotTracker:
                               if self._coast[i] > self.VISIBLE_COAST
                               else self.MAX_DIST_IN)
                 dist_cost = d_field / max(dist_scale, 1.0)
-                img_cost  = d_img / max(self._robot_max_px * 1.25, 1.0)
+                img_cost  = d_img / max(robot_px * 1.25, 1.0)
                 qual_cost = b[6]
                 appearance_cost = self._appearance_cost(i, b)
                 appearance_weight = (
@@ -477,7 +657,7 @@ class RobotTracker:
                     + qual_cost
                     + appearance_weight * appearance_cost
                     + self.POST_MERGE_LOCK_WEIGHT * (
-                        d_lock_img / max(self._robot_max_px, 1.0))
+                        d_lock_img / max(robot_px, 1.0))
                     + self.POST_MERGE_LOCK_APPEAR_WEIGHT * lock_feature_cost
                 )
 
@@ -496,7 +676,7 @@ class RobotTracker:
                 if self._post_merge_locks[i] is not None:
                     skip_cost_i += 0.6
             else:
-                skip_cost_i = SKIP_COST * 0.9
+                skip_cost_i = SKIP_COST
             skip_cols[i, i] = skip_cost_i
 
         cost = np.hstack([real_cost, skip_cols])
@@ -523,6 +703,14 @@ class RobotTracker:
                 work[ri, :] = INF
                 work[:, ci] = INF
 
+        # A never-seen track must not start inside another robot's blob.
+        for i in [t for t in assignment if self._pos[t] is None]:
+            pid = blobs[assignment[i]][3]
+            if any(blobs[assignment[t]][3] == pid for t in assignment if t != i):
+                del assignment[i]
+            else:
+                print("[INFO] Track {} acquired (robot was not visible at start).".format(i))
+
         return assignment
 
     def _blob_matches_track_merge(self, track_id: int, blob) -> bool:
@@ -531,7 +719,7 @@ class RobotTracker:
         if contour is None:
             return False
         dist = abs(self.cv2.pointPolygonTest(contour, (float(pred_px_x), float(pred_px_y)), True))
-        return dist <= self._robot_max_px * 0.75
+        return dist <= self._track_robot_px(track_id) * 0.75
 
     def _predict_field_pos(self, track_id: int) -> Tuple[float, float]:
         if self._pos[track_id] is None:
@@ -546,10 +734,7 @@ class RobotTracker:
         if self._pos_px[track_id] is None:
             if self._pos[track_id] is None:
                 return (0.0, 0.0)
-            pt = self.np.array([[[self._pos[track_id][0], self._pos[track_id][1]]]],
-                               dtype=self.np.float32)
-            ip = self.cv2.perspectiveTransform(pt, self._H_inv)[0][0]
-            return (float(ip[0]), float(ip[1]))
+            return self.field_to_image(self._pos[track_id][0], self._pos[track_id][1])
         px, py = self._pos_px[track_id]
         vx, vy = self._vel_px[track_id]
         coast = min(self._coast[track_id], self.MAX_COAST)
@@ -592,7 +777,7 @@ class RobotTracker:
         effective_hold = max(self._coast[track_id], self._merge_recent[track_id])
         if effective_hold > 0 and d_field > self.MAX_REACQ_IN:
             return False
-        img_limit = self._robot_max_px * (
+        img_limit = self._track_robot_px(track_id) * (
             1.3 + self.REACQ_PX_PAD * min(effective_hold, 4))
         if d_img > img_limit:
             return False
@@ -616,10 +801,8 @@ class RobotTracker:
                 positions.append((tid, float(self._pos_px[tid][0]),
                                        float(self._pos_px[tid][1])))
             elif self._pos[tid] is not None:
-                pt = np.array([[[self._pos[tid][0], self._pos[tid][1]]]],
-                              dtype=np.float32)
-                ip = self.cv2.perspectiveTransform(pt, self._H_inv)[0][0]
-                positions.append((tid, float(ip[0]), float(ip[1])))
+                ipx, ipy = self.field_to_image(self._pos[tid][0], self._pos[tid][1])
+                positions.append((tid, ipx, ipy))
             else:
                 positions.append((tid, 0.0, 0.0))
 
@@ -730,10 +913,8 @@ class RobotTracker:
             else:
                 # Fall back to transformed field position
                 if self._pos[tid] is not None:
-                    pt = self.np.array([[[self._pos[tid][0], self._pos[tid][1]]]],
-                                       dtype=self.np.float32)
-                    ip = self.cv2.perspectiveTransform(pt, self._H_inv)[0][0]
-                    track_current_px.append((tid, float(ip[0]), float(ip[1])))
+                    ipx, ipy = self.field_to_image(self._pos[tid][0], self._pos[tid][1])
+                    track_current_px.append((tid, ipx, ipy))
                 else:
                     track_current_px.append((tid, mcx, mcy))
 
@@ -891,9 +1072,7 @@ class RobotTracker:
             src_tid  = current[k]
             if src_tid in mg.peak_assignment:
                 px, py = mg.peak_assignment[src_tid]
-                pt = self.np.array([[[px, py]]], dtype=self.np.float32)
-                fp = self.cv2.perspectiveTransform(pt, self._H_2d)[0][0]
-                fx, fy = float(fp[0]), float(fp[1])
+                fx, fy = self._image_to_field(px, py)
                 if 0 <= fx <= 144 and 0 <= fy <= 144:
                     self._pos[dest_tid]    = (fx, fy)
                     self._pos_px[dest_tid] = (px, py)
@@ -926,6 +1105,7 @@ class RobotTracker:
             return False
         center_x = sum(px for px, _py in peak_points) / len(peak_points)
         center_y = sum(py for _px, py in peak_points) / len(peak_points)
+        merge_px = self._robot_px_at(center_x, center_y)
 
         def _proj(px, py):
             return (px - center_x) * ax + (py - center_y) * ay
@@ -942,7 +1122,7 @@ class RobotTracker:
                 math.hypot(cx - px, cy - py)
                 for px, py in peak_points
             )
-            if nearest_peak <= self._robot_max_px * 2.6:
+            if nearest_peak <= merge_px * 2.6:
                 blob_ranked.append((nearest_peak, bi))
 
         blob_ranked.sort()
@@ -967,7 +1147,7 @@ class RobotTracker:
                 appearance_cost = self._appearance_cost(tid, blob)
                 entry_feature_cost = self._feature_distance(entry_feature, blob[9] if len(blob) > 9 else None)
                 per_track.append((
-                    d_peak / max(self._robot_max_px, 1.0)
+                    d_peak / max(merge_px, 1.0)
                     + 0.6 * d_field / max(self.MAX_REACQ_IN, 1.0)
                     + 1.4 * appearance_cost
                     + 1.1 * entry_feature_cost,
@@ -1011,15 +1191,15 @@ class RobotTracker:
                     d_lock = 0.0
 
                 total_cost += (
-                    d_img / max(self._robot_max_px, 1.0)
+                    d_img / max(merge_px, 1.0)
                     + 0.55 * d_field / max(self.MAX_DIST_IN, 1.0)
                     + 1.9 * appearance_cost
                     + 1.35 * entry_feature_cost
                     + 0.65 * slot_penalty
-                    + 0.8 * d_lock / max(self._robot_max_px, 1.0)
+                    + 0.8 * d_lock / max(merge_px, 1.0)
                 )
 
-                if d_img > self._robot_max_px * 3.6 and appearance_cost > 0.25:
+                if d_img > merge_px * 3.6 and appearance_cost > 0.25:
                     valid = False
                     break
 
@@ -1067,9 +1247,7 @@ class RobotTracker:
         for tid in track_ids:
             if tid in peak_assignment:
                 px, py = peak_assignment[tid]
-                pt = self.np.array([[[px, py]]], dtype=self.np.float32)
-                fp = self.cv2.perspectiveTransform(pt, self._H_2d)[0][0]
-                fx, fy = float(fp[0]), float(fp[1])
+                fx, fy = self._image_to_field(px, py)
                 if 0 <= fx <= 144 and 0 <= fy <= 144:
                     self._pos[tid]    = (fx, fy)
                     self._pos_px[tid] = (px, py)
@@ -1094,7 +1272,7 @@ class RobotTracker:
             fg = cv2.erode(fg,  self._neck_kern)
             fg = cv2.dilate(fg, self._neck_kern)
 
-        ball_mask = self._ball_color_mask(frame)
+        ball_mask = self._ball_color_mask(frame, gray)
         if ball_mask is not None:
             fg = cv2.bitwise_and(fg, cv2.bitwise_not(ball_mask))
 
@@ -1107,25 +1285,50 @@ class RobotTracker:
             size += 1
         return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size))
 
-    def _ball_color_mask(self, frame):
+    def _ball_color_mask(self, frame, diff_gray=None):
+        """
+        Builds two masks from the scoring-element colors (season.py):
+
+        - returned / _last_ball_suppress_mask: ball-colored pixels on the
+          field (moving or not), cleaned and dilated; removed from the robot
+          foreground so game pieces are not mistaken for robots.
+        - _last_ball_mask: ball-colored pixels that also differ from the
+          background (i.e. moving or newly placed), inside the shot region
+          (field + space above the far wall around the scoring targets).
+          Used by the shot detector. Only lightly cleaned so small, distant
+          balls survive.
+        """
         if not self.BALL_FILTER_ENABLED or self._field_mask is None:
             self._last_ball_mask = None
+            self._last_ball_suppress_mask = None
             return None
 
         cv2, np = self.cv2, self.np
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        green = cv2.inRange(
-            hsv,
-            np.array(self.BALL_GREEN_HSV_LO, dtype=np.uint8),
-            np.array(self.BALL_GREEN_HSV_HI, dtype=np.uint8),
-        )
-        purple = cv2.inRange(
-            hsv,
-            np.array(self.BALL_PURPLE_HSV_LO, dtype=np.uint8),
-            np.array(self.BALL_PURPLE_HSV_HI, dtype=np.uint8),
-        )
-        mask = cv2.bitwise_or(green, purple)
-        mask = cv2.bitwise_and(mask, self._field_mask)
+        color = None
+        for lo, hi in self.BALL_HSV_RANGES:
+            part = cv2.inRange(hsv, np.array(lo, dtype=np.uint8), np.array(hi, dtype=np.uint8))
+            color = part if color is None else cv2.bitwise_or(color, part)
+        if color is None:
+            self._last_ball_mask = None
+            self._last_ball_suppress_mask = None
+            return None
+
+        # Moving-ball mask for shot detection.
+        if diff_gray is None:
+            diff_gray = cv2.cvtColor(cv2.absdiff(frame, self._bg), cv2.COLOR_BGR2GRAY)
+        _, moving = cv2.threshold(diff_gray, self.BALL_MOTION_THRESH, 255, cv2.THRESH_BINARY)
+        shot = cv2.bitwise_and(color, moving)
+        region = self._shot_region_mask if self._shot_region_mask is not None else self._field_mask
+        shot = cv2.bitwise_and(shot, region)
+        if self.BALL_SHOT_CLOSE_PX and self.BALL_SHOT_CLOSE_PX > 1:
+            k = cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE, (self.BALL_SHOT_CLOSE_PX, self.BALL_SHOT_CLOSE_PX))
+            shot = cv2.morphologyEx(shot, cv2.MORPH_CLOSE, k)
+        self._last_ball_mask = shot
+
+        # Suppression mask for robot segmentation.
+        mask = cv2.bitwise_and(color, self._field_mask)
 
         open_kern = self._scaled_odd_kernel(self.BALL_MASK_OPEN_FRAC, 3)
         close_kern = self._scaled_odd_kernel(self.BALL_MASK_CLOSE_FRAC, 3)
@@ -1134,7 +1337,7 @@ class RobotTracker:
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, close_kern)
         mask = self._filter_contours_by_field_area(mask, self.BALL_MIN_FIELD_AREA_IN2)
         mask = cv2.dilate(mask, dilate_kern)
-        self._last_ball_mask = mask
+        self._last_ball_suppress_mask = mask
         return mask
 
     def _filter_contours_by_field_area(self, mask, min_area_in2: float):
@@ -1171,7 +1374,7 @@ class RobotTracker:
         cnts, _ = cv2.findContours(fg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         valid = []
         for c in cnts:
-            if cv2.contourArea(c) < self.BLOB_MIN:
+            if cv2.contourArea(c) < self._blob_min_area(c):
                 continue
             if self._contour_field_area_in2(c) < self.BLOB_MIN_FIELD_AREA_IN2:
                 continue
@@ -1207,15 +1410,16 @@ class RobotTracker:
             if M["m00"] > 0:
                 centers.append((M["m10"] / M["m00"], M["m01"] / M["m00"]))
         area = float(cv2.contourArea(contour))
-        expected = self._expected_robot_count(area)
+        expected = self._expected_robot_count(area, contour)
         if len(centers) < expected:
             retry = self._split_contour_relaxed(mask, dist, expected)
             if len(retry) > len(centers):
                 centers = retry
         return centers
 
-    def _expected_robot_count(self, contour_area: float) -> int:
-        robot_area = max(self._robot_max_px * self._robot_max_px, 1.0)
+    def _expected_robot_count(self, contour_area: float, contour=None) -> int:
+        robot_px = self._contour_robot_px(contour)
+        robot_area = max(robot_px * robot_px, 1.0)
         ratio = contour_area / robot_area
         if ratio >= self.EXPECT_4WAY_AREA:
             return 4
@@ -1258,7 +1462,7 @@ class RobotTracker:
         for contour, split_count in seen.values():
             if contour is None:
                 continue
-            expected = self._expected_robot_count(float(self.cv2.contourArea(contour)))
+            expected = self._expected_robot_count(float(self.cv2.contourArea(contour)), contour)
             nearby_tracks = []
             for track_id in range(4):
                 if self._pos[track_id] is None and self._pos_px[track_id] is None:
@@ -1266,7 +1470,7 @@ class RobotTracker:
                 pred_px_x, pred_px_y = self._predict_image_pos(track_id)
                 dist = self.cv2.pointPolygonTest(
                     contour, (float(pred_px_x), float(pred_px_y)), True)
-                if dist >= -self._robot_max_px * 0.75:
+                if dist >= -self._track_robot_px(track_id) * 0.75:
                     nearby_tracks.append(track_id)
             expected = max(expected, len(nearby_tracks))
             if expected <= split_count:
@@ -1283,7 +1487,7 @@ class RobotTracker:
         candidates = []
         for parent_id, c in enumerate(cnts):
             area = float(cv2.contourArea(c))
-            if area < self.BLOB_MIN:
+            if area < self._blob_min_area(c):
                 continue
             field_area = self._contour_field_area_in2(c)
             if field_area < self.BLOB_MIN_FIELD_AREA_IN2:
@@ -1298,11 +1502,11 @@ class RobotTracker:
             if not sub_centers:
                 continue
             per_area = area / len(sub_centers)
-            quality_penalty = self._blob_quality_penalty(area, per_area, len(sub_centers))
+            quality_penalty = self._blob_quality_penalty(
+                area, per_area, len(sub_centers), self._contour_robot_px(c))
+            contour_bottom = float(c[:, 0, 1].max())
             for cx, cy in sub_centers:
-                pt = np.array([[[cx, cy]]], dtype=np.float32)
-                fp = cv2.perspectiveTransform(pt, self._H_2d)[0][0]
-                fx, fy = float(fp[0]), float(fp[1])
+                fx, fy = self._image_to_field(cx, cy, bottom_v=contour_bottom)
                 if not (0 <= fx <= 144 and 0 <= fy <= 144):
                     continue
                 # ── Corner zone suppression ─────────────────────────────────
@@ -1313,7 +1517,7 @@ class RobotTracker:
                     (fx < cz and fy < cz) or           # top-left corner
                     (fx > 144 - cz and fy < cz)        # top-right corner
                 )
-                if self._initialized and in_corner_zone:
+                if season.CORNER_ZONE_SUPPRESSION and self._initialized and in_corner_zone:
                     # Allow if an actively tracked robot is already nearby.
                     robot_present = False
                     for tid in range(4):
@@ -1384,9 +1588,10 @@ class RobotTracker:
                 for fx, fy, hdg, _a, pid, cx, cy, qual, nsplit, cnt, appearance in candidates]
 
     def _augment_subcenters_with_track_priors(self, contour, centers):
-        expected = self._expected_robot_count(float(self.cv2.contourArea(contour)))
+        expected = self._expected_robot_count(float(self.cv2.contourArea(contour)), contour)
         if len(centers) >= expected:
             return centers
+        robot_px = self._contour_robot_px(contour)
 
         nearby = []
         for track_id in range(4):
@@ -1394,7 +1599,7 @@ class RobotTracker:
                 continue
             px, py = self._predict_image_pos(track_id)
             dist = self.cv2.pointPolygonTest(contour, (float(px), float(py)), True)
-            if dist >= -self._robot_max_px * self.MERGE_PRIOR_PAD_PX:
+            if dist >= -robot_px * self.MERGE_PRIOR_PAD_PX:
                 nearby.append((dist, float(px), float(py)))
 
         target = min(max(expected, len(nearby)), 4)
@@ -1402,7 +1607,7 @@ class RobotTracker:
             return centers
 
         augmented = list(centers)
-        min_sep = max(self._robot_max_px * self.MERGE_PRIOR_MIN_SEP, 6.0)
+        min_sep = max(robot_px * self.MERGE_PRIOR_MIN_SEP, 6.0)
         nearby.sort(reverse=True)
         for _dist, px, py in nearby:
             too_close = any(math.hypot(px-cx, py-cy) < min_sep for cx, cy in augmented)
@@ -1413,8 +1618,10 @@ class RobotTracker:
                 break
         return augmented
 
-    def _blob_quality_penalty(self, area: float, per_area: float, split_count: int) -> float:
-        robot_area = max(self._robot_max_px * self._robot_max_px, 1.0)
+    def _blob_quality_penalty(self, area: float, per_area: float, split_count: int,
+                              robot_px: Optional[float] = None) -> float:
+        robot_px = self._robot_max_px if robot_px is None else robot_px
+        robot_area = max(robot_px * robot_px, 1.0)
         ratio = per_area / robot_area
         penalty = min(abs(math.log(max(ratio, 1e-6))), 2.5) * 0.28
         if split_count == 1 and area > robot_area * 1.8:

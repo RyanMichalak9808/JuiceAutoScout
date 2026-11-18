@@ -241,6 +241,17 @@ class DashboardState:
             raise RuntimeError("Corner files must be saved inside the project workspace.")
         destination.parent.mkdir(parents=True, exist_ok=True)
         payload = {"corners_px": corners_px}
+        # Keep HIVE boxes / exclusion areas drawn with tools/calibrate.py when
+        # the dashboard re-saves corners into the same file.
+        if destination.exists():
+            try:
+                with destination.open("r", encoding="utf-8") as handle:
+                    existing = json.load(handle)
+                for key in ("hive_boxes_px", "exclude_px"):
+                    if key in existing:
+                        payload[key] = existing[key]
+            except (OSError, ValueError):
+                pass
         with destination.open("w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=2)
             handle.write("\n")

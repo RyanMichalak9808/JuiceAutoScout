@@ -917,7 +917,7 @@ function checklistStatusLabel(status) {
 function renderProcessVisualizer(job) {
   const dataUrl = job?.jlog_workspace_url || job?.csv_workspace_url;
   if (job?.status === "completed" && dataUrl) {
-    const iframeUrl = `/tools/data_visualizer.html?embed=1&data=${encodeURIComponent(dataUrl)}&image=${encodeURIComponent("/assets/decode-field.png")}`;
+    const iframeUrl = `/tools/data_visualizer.html?embed=1&data=${encodeURIComponent(dataUrl)}&image=${encodeURIComponent("/assets/biobuzz-field.png")}`;
     const existingFrame = dom.processVisualizerShell.querySelector("iframe");
     if (existingFrame && existingFrame.dataset.src === iframeUrl) {
       return;

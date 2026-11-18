@@ -1,13 +1,17 @@
 import math
 from typing import Dict, List, Optional, Tuple
 
-from autoscout.geometry import _field_center_to_corner_xy
+from autoscout import season
 from autoscout.models import BallTrack, ShotEvent
 
 
 class ShotDetector:
-    BALL_MIN_CONTOUR_AREA_PX = 8.0
-    BALL_MAX_CONTOUR_AREA_PX = 420.0
+    # Pixel constants below are tuned for REF_FRAME_WIDTH-wide video and are
+    # scaled linearly (areas quadratically) to the actual frame width.
+    REF_FRAME_WIDTH = 640.0
+    # BIOBUZZ POLLEN (2.8 in) is much smaller than DECODE balls.
+    BALL_MIN_CONTOUR_AREA_PX = 3.0
+    BALL_MAX_CONTOUR_AREA_PX = 200.0
     BALL_ASSOC_DIST_PX = 34.0
     BALL_ASSOC_DIST_FAST_PX = 124.0
     BALL_MAX_MISSING = 12
@@ -19,13 +23,22 @@ class ShotDetector:
     SHOT_MIN_NEGATIVE_STEP_RATIO = 0.35
     SHOT_MIN_AWAY_FROM_SHOOTER_PX = 2.0
     SHOT_DEDUP_TIME_S = 0.35
-    GOAL_OPENING_TOP_FRAC = 0.58
     GOAL_APPROACH_SIDE_PAD_FRAC = 0.30
     GOAL_APPROACH_DOWN_FRAC = 0.95
     GOAL_CONFIRM_MIN_FRAMES = 2
     GOAL_ENTRY_MAX_MISSING = 5
-    GOAL_OPENING_SHRINK_X = 0.84
-    GOAL_OPENING_SHRINK_Y = 0.80
+    # Clear HIVE cells: a made ball stays visible and comes to rest inside the
+    # target. Resolve as made once it has moved less than GOAL_SETTLE_PX per
+    # frame for GOAL_SETTLE_FRAMES frames inside the target polygon.
+    GOAL_SETTLE_FRAMES = 4
+    GOAL_SETTLE_PX = 2.0
+    # Color-based HIVE fallback (only used without hive_boxes_px):
+    GOAL_TOP_BAND_FRAC = 0.55          # search the top part of the frame
+    GOAL_MAX_TOP_FRAC = 0.35           # target top edge must be above this
+    GOAL_SEARCH_HALF_WIDTH_FRAC = 0.30 # search this far either side of field center
+    GOAL_JOIN_KERNEL_PX = 9            # joins the thin HIVE cell outlines
+    GOAL_OPENING_SHRINK_X = 0.90
+    GOAL_OPENING_SHRINK_Y = 0.90
     GOAL_BLUE_HSV_LO = (95, 80, 45)
     GOAL_BLUE_HSV_HI = (135, 255, 255)
     GOAL_RED1_HSV_LO = (0, 90, 45)
@@ -42,15 +55,29 @@ class ShotDetector:
         self._goal_approaches: Dict[str, object] = {}
         self._last_event_time_by_robot: Dict[int, float] = {}
         self._ready = False
+        self._lin = 1.0   # linear pixel scale vs REF_FRAME_WIDTH
+
+    def _px(self, value: float) -> float:
+        return value * self._lin
+
+    def _area(self, value: float) -> float:
+        return value * self._lin * self._lin
 
     def setup(self, tracker) -> None:
         if tracker._bg is None or tracker._field_mask is None:
             return
-        openings = self._detect_goal_openings(tracker._bg, tracker._field_mask)
+        self._lin = tracker._bg.shape[1] / self.REF_FRAME_WIDTH
+        if tracker.hive_boxes:
+            openings = {color: poly.copy() for color, poly in tracker.hive_boxes.items()}
+            print("[INFO] Shot detector using calibrated HIVE boxes.")
+        else:
+            openings = self._detect_goal_openings(tracker._bg, tracker)
+            if openings:
+                print("[WARN] No hive_boxes_px in calibration; HIVES found by color. "
+                      "Draw HIVE boxes in tools/calibrate.py for reliable results.")
         if not openings:
-            openings = self._fallback_goal_openings(tracker)
-        if not openings:
-            print("[WARN] Shot detector could not determine goal openings.")
+            print("[WARN] Shot detector could not determine HIVE targets. "
+                  "Draw HIVE boxes with tools/calibrate.py (key H).")
             return
         self._goal_openings = openings
         self._goal_approaches = {
@@ -75,6 +102,12 @@ class ShotDetector:
                 continue
             self._update_goal_state(track)
             self._maybe_mark_launched(track, robot_refs)
+            if track.launched and self._settled_in_goal(track):
+                event = self._resolve_track(track, frame_num, match_time_s)
+                if event is not None and not self._is_duplicate_event(event):
+                    events.append(event)
+                del self._tracks[track.track_id]
+                continue
             if track.missing_frames > self.BALL_MAX_MISSING:
                 event = self._resolve_track(track, frame_num, match_time_s)
                 if event is not None and not self._is_duplicate_event(event):
@@ -117,10 +150,17 @@ class ShotDetector:
         detections = []
         for c in cnts:
             area = float(cv2.contourArea(c))
-            if area < self.BALL_MIN_CONTOUR_AREA_PX or area > self.BALL_MAX_CONTOUR_AREA_PX:
+            if len(c) < 3:
+                # contourArea is 0 for 1-2 pixel blobs; use the pixel count.
+                area = float(len(c))
+            if area < self._area(self.BALL_MIN_CONTOUR_AREA_PX) or area > self._area(self.BALL_MAX_CONTOUR_AREA_PX):
                 continue
             M = cv2.moments(c)
             if M["m00"] <= 0:
+                pts = c.reshape(-1, 2)
+                cx = float(pts[:, 0].mean())
+                cy = float(pts[:, 1].mean())
+                detections.append((cx, cy, area))
                 continue
             cx = float(M["m10"] / M["m00"])
             cy = float(M["m01"] / M["m00"])
@@ -132,11 +172,10 @@ class ShotDetector:
         for rid, pose in enumerate(poses):
             if not pose.visible:
                 continue
-            pt = self.np.array([[[pose.x_in, pose.y_in]]], dtype=self.np.float32)
-            ip = self.cv2.perspectiveTransform(pt, tracker._H_inv)[0][0]
+            ix, iy = tracker.field_to_image(pose.x_in, pose.y_in)
             refs.append({
                 "id": rid,
-                "img": (float(ip[0]), float(ip[1])),
+                "img": (ix, iy),
                 "center": (float(pose.x_center_in), float(pose.y_center_in)),
             })
         return refs
@@ -147,7 +186,7 @@ class ShotDetector:
         pairs = []
         for tid, track in self._tracks.items():
             pred_x, pred_y = self._predict_track_point(track)
-            max_dist = self.BALL_ASSOC_DIST_FAST_PX if track.launched else self.BALL_ASSOC_DIST_PX
+            max_dist = self._px(self.BALL_ASSOC_DIST_FAST_PX if track.launched else self.BALL_ASSOC_DIST_PX)
             for di, (cx, cy, _area) in enumerate(detections):
                 d = math.hypot(cx - pred_x, cy - pred_y)
                 if d <= max_dist:
@@ -222,16 +261,16 @@ class ShotDetector:
         if first is None or last is None:
             return
         shooter_ref, shooter_score = self._select_shooter(track, robot_refs)
-        if shooter_ref is None or shooter_score > self.SHOT_MAX_START_DIST_PX:
+        if shooter_ref is None or shooter_score > self._px(self.SHOT_MAX_START_DIST_PX):
             return
         f0, x0, y0 = first
         f1, x1, y1 = last
         dt = max(f1 - f0, 1)
         disp = math.hypot(x1 - x0, y1 - y0)
         avg_speed = disp / dt
-        if disp < self.SHOT_MIN_DISP_PX or avg_speed < self.SHOT_MIN_SPEED_PX:
+        if disp < self._px(self.SHOT_MIN_DISP_PX) or avg_speed < self._px(self.SHOT_MIN_SPEED_PX):
             return
-        if (y1 - y0) > -self.SHOT_MIN_UPWARD_PX:
+        if (y1 - y0) > -self._px(self.SHOT_MIN_UPWARD_PX):
             return
         if not self._has_consistent_upward_motion(track):
             return
@@ -301,7 +340,7 @@ class ShotDetector:
             rx, ry = ref["img"]
             dist_origin = math.hypot(origin_x - rx, origin_y - ry)
             dist_first = math.hypot(x0 - rx, y0 - ry)
-            above_penalty = max(0.0, (y0 - ry) - 6.0) * 0.75
+            above_penalty = max(0.0, (y0 - ry) - self._px(6.0)) * 0.75
             score = 0.7 * dist_origin + 0.3 * dist_first + above_penalty
             if score < best_score:
                 best_score = score
@@ -320,7 +359,7 @@ class ShotDetector:
         _f1, x1, y1 = last
         start_dist = math.hypot(x0 - sx, y0 - sy)
         last_dist = math.hypot(x1 - sx, y1 - sy)
-        return last_dist >= start_dist + self.SHOT_MIN_AWAY_FROM_SHOOTER_PX
+        return last_dist >= start_dist + self._px(self.SHOT_MIN_AWAY_FROM_SHOOTER_PX)
 
     def _confirmed_goal_make(self, track: BallTrack) -> bool:
         if not track.entered_goal:
@@ -359,14 +398,38 @@ class ShotDetector:
         goal_bottom = max(
             max(poly[:, 0, 1]) for poly in self._goal_approaches.values()
         ) if self._goal_approaches else 0.0
-        return top_y <= goal_bottom + max(14.0, 0.2 * max(goal_bottom - goal_top, 1.0))
+        return top_y <= goal_bottom + max(self._px(14.0), 0.2 * max(goal_bottom - goal_top, 1.0))
 
-    def _detect_goal_openings(self, background, field_mask):
+    def _settled_in_goal(self, track: BallTrack) -> bool:
+        n = self.GOAL_SETTLE_FRAMES
+        if not track.entered_goal or len(track.samples) < n + 1 or track.missing_frames > 0:
+            return False
+        recent = track.samples[-(n + 1):]
+        poly = self._goal_openings.get(track.goal_color)
+        if poly is None:
+            return False
+        limit = self._px(self.GOAL_SETTLE_PX)
+        for (_fa, xa, ya), (_fb, xb, yb) in zip(recent[:-1], recent[1:]):
+            if math.hypot(xb - xa, yb - ya) > limit:
+                return False
+            if self.cv2.pointPolygonTest(poly, (float(xb), float(yb)), False) < 0:
+                return False
+        return True
+
+    def _detect_goal_openings(self, background, tracker):
+        """Fallback: find each alliance's scoring target by color in the
+        median background. Targets sit near the field center horizontally
+        (season.HIVE_SIDES says which side of center each alliance is on)
+        and in the upper part of the frame."""
         cv2, np = self.cv2, self.np
         hsv = cv2.cvtColor(background, cv2.COLOR_BGR2HSV)
         h, w = background.shape[:2]
         top_band = np.zeros((h, w), dtype=np.uint8)
-        top_band[:max(1, int(round(h * 0.55))), :] = 255
+        top_band[:max(1, int(round(h * self.GOAL_TOP_BAND_FRAC))), :] = 255
+
+        center_u, _center_v = tracker.field_to_image(72.0, 72.0) if tracker._H_inv is not None else (w / 2.0, 0.0)
+        split = int(round(min(max(center_u, 0.0), w - 1.0)))
+        half = int(round(w * self.GOAL_SEARCH_HALF_WIDTH_FRAC))
 
         masks = {
             "blue": cv2.inRange(
@@ -391,55 +454,36 @@ class ShotDetector:
         openings = {}
         for color, mask in masks.items():
             mask = cv2.bitwise_and(mask, top_band)
-            if color == "blue":
-                mask[:, w // 2:] = 0
+            side = season.HIVE_SIDES.get(color, "left")
+            keep = np.zeros_like(mask)
+            if side == "left":
+                keep[:, max(0, split - half):split] = 255
             else:
-                mask[:, :w // 2] = 0
-            kern = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kern)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kern)
+                keep[:, split:min(w, split + half)] = 255
+            mask = cv2.bitwise_and(mask, keep)
+            small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+            join_size = max(3, int(round(self._px(self.GOAL_JOIN_KERNEL_PX))) | 1)
+            join = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (join_size, join_size))
+            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, small)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, join)
             cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             cnts = sorted(cnts, key=cv2.contourArea, reverse=True)
             chosen = None
             for c in cnts:
-                area = float(cv2.contourArea(c))
-                if area < self.GOAL_MIN_AREA_PX:
+                if float(cv2.contourArea(c)) < self._area(self.GOAL_MIN_AREA_PX):
                     continue
-                x, y, ww, hh = cv2.boundingRect(c)
-                if y > int(0.22 * h):
+                _x, y, _ww, _hh = cv2.boundingRect(c)
+                if y > int(self.GOAL_MAX_TOP_FRAC * h):
                     continue
                 chosen = c
                 break
             if chosen is None:
                 continue
-            x, y, ww, hh = cv2.boundingRect(chosen)
-            pts = chosen.reshape(-1, 2)
-            top_pts = pts[pts[:, 1] <= y + hh * self.GOAL_OPENING_TOP_FRAC]
-            if len(top_pts) >= 3:
-                hull = cv2.convexHull(top_pts.reshape(-1, 1, 2).astype(np.int32))
-            else:
-                hull = cv2.convexHull(chosen)
             openings[color] = self._shrink_polygon(
-                hull,
+                cv2.convexHull(chosen),
                 shrink_x=self.GOAL_OPENING_SHRINK_X,
                 shrink_y=self.GOAL_OPENING_SHRINK_Y,
             )
-        return openings
-
-    def _fallback_goal_openings(self, tracker):
-        if tracker._H_inv is None:
-            return {}
-        cv2, np = self.cv2, self.np
-        field_points = {
-            "blue": [(-8.0, -72.0), (-8.0, -40.0), (-36.0, -56.0)],
-            "red": [(8.0, -72.0), (36.0, -56.0), (8.0, -40.0)],
-        }
-        openings = {}
-        for color, pts_center in field_points.items():
-            pts_corner = [_field_center_to_corner_xy(x, y) for x, y in pts_center]
-            arr = np.array([pts_corner], dtype=np.float32)
-            img = cv2.perspectiveTransform(arr, tracker._H_inv)[0]
-            openings[color] = np.round(img).astype(np.int32).reshape(-1, 1, 2)
         return openings
 
     def _build_goal_approach(self, poly):

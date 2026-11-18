@@ -95,10 +95,9 @@ def _build_manual_reid_histograms(
             fx_center = float(row["robot{}_x_in".format(robot_id)])
             fy_center = float(row["robot{}_y_in".format(robot_id)])
             fx, fy = _field_center_to_corner_xy(fx_center, fy_center)
-            pt = np.array([[[fx, fy]]], dtype=np.float32)
-            ip = cv2.perspectiveTransform(pt, H_inv)[0][0]
+            ipx, ipy = tracker.field_to_image(fx, fy)
             hist = tracker._extract_appearance_feature(
-                frame, int(round(float(ip[0]))), int(round(float(ip[1]))))
+                frame, int(round(ipx)), int(round(ipy)))
             if hist is not None:
                 refs[robot_id].append(hist)
 

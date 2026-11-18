@@ -117,6 +117,7 @@ AutoScout is configured for BIOBUZZ presented by RTX. Game-specific settings liv
 - `robotN_shot_goal` is the HIVE color (`red` or `blue`)
 - the tracker is set up for the typical low, audience-side BIOBUZZ camera: robot size varies with field position (`PERSPECTIVE_ROBOT_SCALE`) and positions use the robot's floor-contact point (`FOOT_OFFSET_FRAC`)
 - robots that start hidden (for example behind the HIVE) are picked up when they appear
+- robot labels are kept through contact and while hidden: no jumping across the field, hidden robots keep their label (hollow `R#?` marker in the debug video), and each robot's look is learned so swapped labels are corrected (see DOCUMENTATION.md, "Keeping robot labels")
 - the visualizer uses `assets/biobuzz-field.png`, oriented as the camera sees the field (red on the left, far wall on top)
 
 For best results, draw the HIVE boxes and an exclusion box over the on-screen clock when calibrating:
@@ -127,7 +128,13 @@ python3 tools/calibrate.py path/to/match.mp4
 
 Drag the 4 corners, press `H` and click two opposite corners for the red HIVE then the blue HIVE, press `X` and click two corners around the clock, then press `S`.
 
-The broadcast-timer match bounds detector (`--auto-match-bounds`) was built for the DECODE overlay; use `--start-offset` for BIOBUZZ videos until it is updated. Starting at the match start matters: field staff walking on the field before the match can otherwise be mistaken for robots.
+The broadcast clock and scoreboard are not reliable (the clock can start seconds after the robots), so the pipeline never reads them; `--auto-match-bounds` was built for the DECODE overlay. Set `--start-offset` to the moment robots first move or shoot. `tools/find_match_start.py` suggests candidates from the video and saves frames around each to confirm:
+
+```bash
+python3 tools/find_match_start.py match.mp4 --corners field_corners.json
+```
+
+Starting at the match start matters: field staff walking on the field before the match can otherwise be mistaken for robots.
 
 ```bash
 python3 auto_scout.py --no-download --video-path match.mp4 --corners field_corners.json --start-offset 8

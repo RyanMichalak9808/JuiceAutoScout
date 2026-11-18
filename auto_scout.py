@@ -379,8 +379,9 @@ def process_match(
                 if tracker._bg is not None:
                     cv2.imwrite(os.path.join(output_dir, "median_background.jpg"), tracker._bg)
 
-        poses = tracker.update(frame)
         tip_events = hive_detector.update(frame, current_frame_num, match_time_s)
+        tracker.set_hive_state(hive_detector.state(match_time_s))
+        poses = tracker.update(frame, time_s=match_time_s)
         shot_events = shot_detector.update(
             current_frame_num, match_time_s, poses, tracker,
             hive_moving=lambda color: hive_detector.is_moving(color, match_time_s))
@@ -528,6 +529,17 @@ def process_match(
 
             n_drawn = 0
             fh, fw = frame.shape[:2]
+            # Hidden robots: hollow marker with "R#?" at the last known spot.
+            for i, pose in enumerate(poses):
+                if pose.visible or tracker._pos[i] is None:
+                    continue
+                hx, hy = tracker._pos[i]
+                hp = cv2.perspectiveTransform(np.array([[[hx, hy]]], dtype=np.float32), H_inv)[0][0]
+                hix, hiy = int(hp[0]), int(hp[1])
+                if 0 <= hix < fw and 0 <= hiy < fh:
+                    cv2.circle(dbg, (hix, hiy), 14, debug_colors[i], 2)
+                    cv2.putText(dbg, "R{}?".format(i), (hix - 12, hiy + 5),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, debug_colors[i], 2)
             for i, pose in enumerate(poses):
                 if not pose.visible:
                     continue

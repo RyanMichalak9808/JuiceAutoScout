@@ -67,6 +67,20 @@ class RobotTracker:
     POST_MERGE_LOCK_APPEAR_WEIGHT = 1.55
     POST_MERGE_DUPLICATE_PX = 32.0
     POST_MERGE_DUPLICATE_IN = 12.0
+    # Automatic appearance re-ID (season.AUTO_REID)
+    AUTO_REID_ISOLATION_IN = 30.0   # no other visible robot this close
+    AUTO_REID_STRIDE = 3            # keep every 3rd isolated sample
+    AUTO_REID_EARLY_SAMPLES = 20    # first samples are kept for good
+    AUTO_REID_RECENT_SAMPLES = 20   # plus a rolling window of recent ones
+    AUTO_REID_MIN_SAMPLES = 5
+    AUTO_REID_ADD_MAX_DIST = 0.5
+    # Identity correction (season.APPEARANCE_ID_CORRECTION)
+    IDFIX_MIN_EARLY = 8        # early samples needed before a robot's look is trusted
+    IDFIX_EMA = 0.25           # smoothing of per-track appearance evidence
+    IDFIX_MIN_OBS = 6          # isolated observations before a track's evidence counts
+    IDFIX_MAX_AGE_S = 2.0      # evidence older than this is ignored
+    IDFIX_MARGIN = 0.08        # required cost improvement per relabeled robot
+    IDFIX_VOTES = 6            # consecutive frames the same relabeling must win
 
     def __init__(self, cv2, np):
         self.cv2, self.np = cv2, np
@@ -102,6 +116,22 @@ class RobotTracker:
         # Typical single-robot blob area / (18 in robot size)^2; learned at
         # initialization when season.AUTO_ROBOT_AREA is on.
         self._single_area_ratio = 1.0
+        self._field_mask_open = None   # field mask without HIVE boxes removed
+        self._hive_bg: Dict[str, dict] = {}
+        self._hive_state: Dict[str, tuple] = {}
+        # Time awareness (seconds, from update(time_s=...)) and auto re-ID.
+        self._now: Optional[float] = None
+        self._last_seen_t: List[Optional[float]] = [None] * 4
+        self._auto_refs_early: List[List] = [[] for _ in range(4)]
+        self._auto_refs_recent: List[List] = [[] for _ in range(4)]
+        self._auto_ref_counter = [0] * 4
+        # Identity correction (season.APPEARANCE_ID_CORRECTION)
+        self._app_ema: List[Optional[object]] = [None] * 4
+        self._app_obs = [0] * 4
+        self._app_last_t: List[Optional[float]] = [None] * 4
+        self._idfix_votes = 0
+        self._idfix_key = None
+        self._idfix_frame = 0
         self._reid_refs: Optional[Dict[int, List]] = None
         # Static blob suppression: track per-blob pixel location history
         # Format: {approx_pixel_key: consecutive_static_frames}
@@ -183,9 +213,13 @@ class RobotTracker:
             cv2.fillPoly(shot_region, [ex], 0)
         self._shot_region_mask = shot_region
 
-        # Robots are never detected inside HIVE boxes (the HIVE tips, which
-        # would look like motion) or inside exclusion areas (clock, overlays).
-        for poly_ex in list(self.hive_boxes.values()) + self.exclude_polys:
+        # Exclusion areas (clock, overlays) are never used. HIVE boxes are
+        # removed from robot detection too, unless the per-position HIVE
+        # background can model them (see _foreground_mask).
+        for poly_ex in self.exclude_polys:
+            cv2.fillPoly(self._field_mask, [poly_ex], 0)
+        self._field_mask_open = self._field_mask.copy()
+        for poly_ex in self.hive_boxes.values():
             cv2.fillPoly(self._field_mask, [poly_ex], 0)
 
         dst2d = np.array([[0,0],[144,0],[144,144],[0,144]], dtype=np.float32)
@@ -224,7 +258,80 @@ class RobotTracker:
 
         self._bg = (np.median(frames, axis=0).astype(np.uint8)
                     if frames else np.zeros((h, w, 3), dtype=np.uint8))
+        self._build_hive_backgrounds(frames)
         print("[INFO] Background ready.")
+
+    def _build_hive_backgrounds(self, frames) -> None:
+        """Median background of each HIVE box for each of its two resting
+        positions (frames split by the measured HIVE color level)."""
+        self._hive_bg = {}
+        if not season.HIVE_STATE_BACKGROUND or not self.hive_boxes or not frames:
+            return
+        from autoscout.hive import hive_box_bounds, measure_hive_level
+        np = self.np
+        h, w = self._bg.shape[:2]
+        for color, poly in self.hive_boxes.items():
+            ranges = season.HIVE_HSV_RANGES.get(color)
+            if not ranges:
+                continue
+            box = hive_box_bounds(poly, w, h)
+            levels = []
+            for f in frames:
+                lvl = measure_hive_level(self.cv2, np, f.astype(np.uint8), box, ranges)
+                levels.append(lvl)
+            valid = [lv for lv in levels if lv is not None]
+            if len(valid) < 6:
+                continue
+            lo, hi = min(valid), max(valid)
+            centers = [lo, hi] if hi - lo >= 0.08 else [float(np.median(valid))]
+            for _ in range(10):   # 2-means on the levels
+                groups = [[] for _ in centers]
+                for lv in valid:
+                    groups[min(range(len(centers)), key=lambda k: abs(lv - centers[k]))].append(lv)
+                centers = [float(np.mean(g)) if g else c for g, c in zip(groups, centers)]
+            x0, y0, x1, y1 = box
+            states = []
+            for center in centers:
+                members = [f for f, lv in zip(frames, levels)
+                           if lv is not None and abs(lv - center) <= 0.05]
+                if len(members) < 4:
+                    continue
+                patch = np.median([m[y0:y1, x0:x1] for m in members], axis=0).astype(np.uint8)
+                states.append((center, patch))
+            if states:
+                self._hive_bg[color] = {"box": box, "states": states}
+                print("[INFO] {} HIVE background learned for {} position(s).".format(color, len(states)))
+
+    def set_hive_state(self, state: Optional[Dict[str, tuple]]) -> None:
+        """{color: (level or None, moving)} from the HIVE tip detector."""
+        self._hive_state = dict(state or {})
+
+    def _background_and_mask(self):
+        """Background image and field mask for this frame: HIVE boxes use the
+        background of the HIVE's current position when it is known and still;
+        otherwise the box is removed from robot detection."""
+        if not self._hive_bg or self._field_mask_open is None:
+            return self._bg, self._field_mask
+        bg = None
+        mask = self._field_mask_open
+        for color, poly in self.hive_boxes.items():
+            info = self._hive_bg.get(color)
+            level, moving = self._hive_state.get(color, (None, True))
+            patch = None
+            if info is not None and level is not None and not moving:
+                center, best = min(info["states"], key=lambda st: abs(level - st[0]))
+                if abs(level - center) <= 0.05:
+                    patch = best
+            if patch is None:
+                if mask is self._field_mask_open:
+                    mask = mask.copy()
+                self.cv2.fillPoly(mask, [poly], 0)
+                continue
+            if bg is None:
+                bg = self._bg.copy()
+            x0, y0, x1, y1 = info["box"]
+            bg[y0:y1, x0:x1] = patch
+        return (bg if bg is not None else self._bg), mask
 
     # ── perspective helpers ───────────────────────────────────────────────
 
@@ -325,7 +432,8 @@ class RobotTracker:
 
     # ── main update ───────────────────────────────────────────────────────
 
-    def update(self, frame, _H=None):
+    def update(self, frame, _H=None, time_s: Optional[float] = None):
+        self._now = time_s
         if self._bg is None or self._H_2d is None:
             for p in self.tracked_poses:
                 p.visible = False
@@ -401,7 +509,7 @@ class RobotTracker:
         for key in list(self._merge_groups.keys()):
             if key not in active_keys:
                 mg = self._merge_groups.pop(key)
-                if len(mg.track_ids) > 2 and self._relabel_multi_merge_exit(mg, blobs, assignment):
+                if self._uses_multi_merge(mg) and self._relabel_multi_merge_exit(mg, blobs, assignment):
                     for tid in mg.track_ids:
                         self._merge_recent[tid] = self.MERGE_HOLD
                 else:
@@ -414,7 +522,7 @@ class RobotTracker:
         two_merged_tracks = set()
         multi_merged_peaks = {}
         for mg in self._merge_groups.values():
-            if len(mg.track_ids) == 2:
+            if not self._uses_multi_merge(mg):
                 two_merged_tracks.update(mg.track_ids)
             else:
                 # FIX (e): use continuously-updated peak positions for 3+ merges
@@ -425,6 +533,7 @@ class RobotTracker:
                 px, py = multi_merged_peaks[i]
                 fx, fy = self._image_to_field(px, py)
                 self._coast[i] = 0
+                self._last_seen_t[i] = self._now
                 self.tracked_poses[i].x_in = fx
                 self.tracked_poses[i].y_in = fy
                 self.tracked_poses[i].visible = True
@@ -441,10 +550,12 @@ class RobotTracker:
                 self.tracked_poses[i].x_in    = fx
                 self.tracked_poses[i].y_in    = fy
                 self.tracked_poses[i].visible = True
+                self._last_seen_t[i] = self._now
                 if i not in two_merged_tracks:
                     self._update_track_motion(i, (fx, fy), (cx, cy))
                     feature = blobs[assignment[i]][9] if len(blobs[assignment[i]]) > 9 else None
                     self._track_features[i] = feature
+                    self._maybe_add_auto_ref(i, blobs, assignment)
                     self._update_post_merge_lock(i, (fx, fy), (cx, cy))
                     self.tracked_poses[i].heading = self._motion_heading(
                         i, self.tracked_poses[i].heading)
@@ -464,6 +575,9 @@ class RobotTracker:
                     self.tracked_poses[i].heading = self._motion_heading(
                         i, self.tracked_poses[i].heading)
 
+        # Appearance evidence and identity correction run last, after all
+        # positions for this frame are written.
+        self._update_identity_evidence(blobs, assignment)
         return self.tracked_poses
 
     def _update_post_merge_lock(self, track_id: int, field_pos, image_pos) -> None:
@@ -677,7 +791,18 @@ class RobotTracker:
                 self._pos[t] for t in seeded
                 if t != i and self._coast[t] <= self.VISIBLE_COAST
             ] if (lost and season.PROTECT_VISIBLE_FROM_LOST) else []
+            # A robot cannot have moved further than it can drive since it was
+            # last seen (applies to every track, not only lost ones).
+            reach = None
+            if (season.LOST_TRACK_RULES and self._now is not None
+                    and self._last_seen_t[i] is not None):
+                reach = (season.LOST_REACQ_SPEED_IN_S * max(0.0, self._now - self._last_seen_t[i])
+                         + season.LOST_REACQ_SLACK_IN)
             for j, b in enumerate(blobs):
+                if lost and season.LOST_TRACK_RULES and b[7] != 1:
+                    continue
+                if reach is not None and math.hypot(b[0] - self._pos[i][0], b[1] - self._pos[i][1]) > reach:
+                    continue
                 if visible_others and b[7] == 1 and any(
                         math.hypot(b[0] - ox, b[1] - oy) < self.ROBOT_SIZE_IN
                         for ox, oy in visible_others):
@@ -917,6 +1042,9 @@ class RobotTracker:
             entry_features = entry_features,
         )
 
+    def _uses_multi_merge(self, mg: MergeGroup) -> bool:
+        return len(mg.track_ids) > 2 or season.FOLLOW_TWO_ROBOT_MERGES
+
     def _update_crossing(self, mg: MergeGroup, contour) -> None:
         """
         Update per-frame merge state.
@@ -945,7 +1073,7 @@ class RobotTracker:
         def _proj(px, py): return (px - mcx) * ax + (py - mcy) * ay
 
         # ── 2-robot: original crossing logic (unchanged) ──────────────────
-        if n == 2:
+        if not self._uses_multi_merge(mg):
             p0, p1 = sorted(peaks[:2], key=lambda p: _proj(p[0], p[1]))
             dot = (p1[0] - p0[0]) * ax + (p1[1] - p0[1]) * ay
             mg.crossed = (dot < 0)
@@ -1050,8 +1178,8 @@ class RobotTracker:
         for tid in mg.track_ids:
             self._merge_recent[tid] = self.MERGE_HOLD
 
-        # ── 3+ robot case ─────────────────────────────────────────────────
-        if len(mg.track_ids) != 2:
+        # ── 3+ robot case (and 2-robot with FOLLOW_TWO_ROBOT_MERGES) ──────
+        if self._uses_multi_merge(mg):
             self._apply_separation_multi(mg)
             return
 
@@ -1326,10 +1454,11 @@ class RobotTracker:
 
     def _foreground_mask(self, frame):
         cv2, np = self.cv2, self.np
-        diff = cv2.absdiff(frame, self._bg)
+        bg, field_mask = self._background_and_mask()
+        diff = cv2.absdiff(frame, bg)
         gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
         _, fg = cv2.threshold(gray, self.FG_THRESH, 255, cv2.THRESH_BINARY)
-        fg = cv2.bitwise_and(fg, self._field_mask)
+        fg = cv2.bitwise_and(fg, field_mask)
         fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, self._kern)
         fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN,  self._kern)
 
@@ -1532,6 +1661,8 @@ class RobotTracker:
             for track_id in range(4):
                 if self._pos[track_id] is None and self._pos_px[track_id] is None:
                     continue
+                if season.LOST_TRACK_RULES and self._coast[track_id] > self.VISIBLE_COAST:
+                    continue
                 pred_px_x, pred_px_y = self._predict_image_pos(track_id)
                 dist = self.cv2.pointPolygonTest(
                     contour, (float(pred_px_x), float(pred_px_y)), True)
@@ -1671,6 +1802,8 @@ class RobotTracker:
         for track_id in range(4):
             if self._pos[track_id] is None and self._pos_px[track_id] is None:
                 continue
+            if season.LOST_TRACK_RULES and self._coast[track_id] > self.VISIBLE_COAST:
+                continue
             px, py = self._predict_image_pos(track_id)
             dist = self.cv2.pointPolygonTest(contour, (float(px), float(py)), True)
             if dist >= -robot_px * self.MERGE_PRIOR_PAD_PX:
@@ -1707,7 +1840,7 @@ class RobotTracker:
         if frame is None:
             return None
 
-        radius = max(6, int(round(self._robot_max_px * self.REID_CROP_SCALE)))
+        radius = max(6, int(round(self._robot_px_at(cx, cy) * self.REID_CROP_SCALE)))
         x0 = max(0, int(cx) - radius)
         y0 = max(0, int(cy) - radius)
         x1 = min(frame.shape[1], int(cx) + radius + 1)
@@ -1751,9 +1884,186 @@ class RobotTracker:
             return 0.0
         return float(self.cv2.compareHist(feature_a, feature_b, self.cv2.HISTCMP_BHATTACHARYYA))
 
+    def _auto_refs(self, track_id: int) -> List:
+        return self._auto_refs_early[track_id] + self._auto_refs_recent[track_id]
+
+    def _isolated_assignment(self, track_id: int, blobs, assignment: Dict[int, int]) -> bool:
+        if track_id not in assignment:
+            return False
+        blob = blobs[assignment[track_id]]
+        if blob[7] != 1 or (len(blob) > 9 and blob[9] is None):
+            return False
+        if any(track_id in mg.track_ids for mg in self._merge_groups.values()):
+            return False
+        if any(t != track_id and blobs[a][3] == blob[3] for t, a in assignment.items()):
+            return False
+        for t in range(4):
+            if t == track_id or self._pos[t] is None or self._coast[t] > self.VISIBLE_COAST:
+                continue
+            if math.hypot(blob[0] - self._pos[t][0], blob[1] - self._pos[t][1]) < self.AUTO_REID_ISOLATION_IN:
+                return False
+        return True
+
+    def _early_cost(self, identity: int, feature) -> Optional[float]:
+        bank = self._auto_refs_early[identity]
+        if feature is None or len(bank) < self.IDFIX_MIN_EARLY:
+            return None
+        dists = sorted(self._feature_distance(feature, ref) for ref in bank)
+        k = min(3, len(dists))
+        return sum(dists[:k]) / k
+
+    def _update_identity_evidence(self, blobs, assignment: Dict[int, int]) -> None:
+        if not (season.AUTO_REID and season.APPEARANCE_ID_CORRECTION) or self._reid_refs:
+            return
+        np = self.np
+        trusted = [k for k in range(4) if len(self._auto_refs_early[k]) >= self.IDFIX_MIN_EARLY]
+        if len(trusted) < 2:
+            return
+        for i in range(4):
+            if not self._isolated_assignment(i, blobs, assignment):
+                continue
+            feature = blobs[assignment[i]][9]
+            costs = np.full(4, np.nan)
+            for k in trusted:
+                costs[k] = self._early_cost(k, feature)
+            if self._app_ema[i] is None:
+                self._app_ema[i] = costs
+            else:
+                prev = self._app_ema[i]
+                upd = np.where(np.isnan(prev), costs, prev * (1 - self.IDFIX_EMA) + costs * self.IDFIX_EMA)
+                self._app_ema[i] = np.where(np.isnan(costs), prev, upd)
+            self._app_obs[i] += 1
+            self._app_last_t[i] = self._now
+        self._maybe_correct_identities(trusted)
+
+    def _maybe_correct_identities(self, trusted) -> None:
+        np = self.np
+        rows = [
+            i for i in range(4)
+            if self._app_ema[i] is not None and self._app_obs[i] >= self.IDFIX_MIN_OBS
+            and self.tracked_poses[i].visible and self._coast[i] <= self.VISIBLE_COAST
+            and self._app_last_t[i] is not None and self._now is not None
+            and self._now - self._app_last_t[i] <= self.IDFIX_MAX_AGE_S
+            and not any(i in mg.track_ids for mg in self._merge_groups.values())
+            and i in trusted
+        ]
+        if len(rows) < 1:
+            self._idfix_votes = 0
+            return
+        cols = list(trusted)
+        cost = np.array([[self._app_ema[i][k] if not np.isnan(self._app_ema[i][k]) else 1.0
+                          for k in cols] for i in rows])
+        try:
+            from scipy.optimize import linear_sum_assignment
+            r_ind, c_ind = linear_sum_assignment(cost)
+        except ImportError:
+            self._idfix_votes = 0
+            return
+        mapping = {rows[r]: cols[c] for r, c in zip(r_ind, c_ind)}
+        changed = {i: k for i, k in mapping.items() if i != k}
+        if not changed:
+            self._idfix_votes = 0
+            self._idfix_key = None
+            return
+        # Only move a label onto an identity that is either among the rows
+        # (visible, being relabeled too) or currently not visible.
+        for i, k in changed.items():
+            if k not in rows and self.tracked_poses[k].visible:
+                self._idfix_votes = 0
+                self._idfix_key = None
+                return
+        cur = sum(cost[rows.index(i)][cols.index(i)] for i in changed)
+        new = sum(cost[rows.index(i)][cols.index(k)] for i, k in changed.items())
+        if cur - new < self.IDFIX_MARGIN * len(changed):
+            self._idfix_votes = 0
+            self._idfix_key = None
+            return
+        key = tuple(sorted(changed.items()))
+        if key == self._idfix_key:
+            self._idfix_votes += 1
+        else:
+            self._idfix_key = key
+            self._idfix_votes = 1
+        if self._idfix_votes < self.IDFIX_VOTES:
+            return
+        self._apply_identity_permutation(changed)
+        self._idfix_votes = 0
+        self._idfix_key = None
+
+    def _apply_identity_permutation(self, changed: Dict[int, int]) -> None:
+        """changed: {current track id: identity it really is}. Track state
+        moves to the true identity; identities left without a robot get the
+        leftover states (usually hidden)."""
+        sources = list(changed.keys())
+        targets = list(changed.values())
+        leftover_targets = [s for s in sources if s not in targets]
+        leftover_sources = [t for t in targets if t not in sources]
+        perm = dict(changed)  # source -> target
+        for s_id, t_id in zip(leftover_sources, leftover_targets):
+            perm[s_id] = t_id
+        fields = ["_pos", "_pos_px", "_vel", "_vel_px", "_coast", "_merge_recent",
+                  "_post_merge_locks", "_track_features", "_last_seen_t",
+                  "_app_ema", "_app_obs", "_app_last_t"]
+        snap = {f: list(getattr(self, f)) for f in fields}
+        pose_snap = [(p.x_in, p.y_in, p.heading, p.visible) for p in self.tracked_poses]
+        for src, dst in perm.items():
+            for f in fields:
+                getattr(self, f)[dst] = snap[f][src]
+            pose = self.tracked_poses[dst]
+            pose.x_in, pose.y_in, pose.heading, pose.visible = pose_snap[src]
+        for ident in perm.values():
+            # recent samples were taken while this label may have been wrong
+            self._auto_refs_recent[ident] = []
+        print("[INFO] Identity correction by appearance: {}".format(
+            ", ".join("robot on R{} is R{}".format(s, d) for s, d in sorted(changed.items()))))
+
+    def _maybe_add_auto_ref(self, track_id: int, blobs, assignment: Dict[int, int]) -> None:
+        """Store this track's appearance while it is clearly on its own."""
+        if not season.AUTO_REID or self._reid_refs:
+            return
+        blob = blobs[assignment[track_id]]
+        feature = blob[9] if len(blob) > 9 else None
+        if feature is None or blob[7] != 1:
+            return
+        if any(track_id in mg.track_ids for mg in self._merge_groups.values()):
+            return
+        if any(t != track_id and blobs[a][3] == blob[3] for t, a in assignment.items()):
+            return
+        fx, fy = blob[0], blob[1]
+        for t in range(4):
+            if t == track_id or self._pos[t] is None or self._coast[t] > self.VISIBLE_COAST:
+                continue
+            if math.hypot(fx - self._pos[t][0], fy - self._pos[t][1]) < self.AUTO_REID_ISOLATION_IN:
+                return
+        self._auto_ref_counter[track_id] += 1
+        if self._auto_ref_counter[track_id] % self.AUTO_REID_STRIDE != 0:
+            return
+        bank = self._auto_refs(track_id)
+        if len(bank) >= 8:
+            nearest = min(self._feature_distance(feature, ref) for ref in bank)
+            if nearest > self.AUTO_REID_ADD_MAX_DIST:
+                return   # looks unlike this robot: maybe the track is on the wrong one
+        early = self._auto_refs_early[track_id]
+        if len(early) < self.AUTO_REID_EARLY_SAMPLES:
+            early.append(feature)
+        else:
+            recent = self._auto_refs_recent[track_id]
+            recent.append(feature)
+            if len(recent) > self.AUTO_REID_RECENT_SAMPLES:
+                recent.pop(0)
+
     def _appearance_cost_for_feature(self, track_id: int, feature) -> float:
-        if not self._reid_refs or track_id not in self._reid_refs or feature is None:
+        if feature is None:
             return 0.0
+        if not self._reid_refs or track_id not in self._reid_refs:
+            if not season.AUTO_REID:
+                return 0.0
+            bank = self._auto_refs(track_id)
+            if len(bank) < self.AUTO_REID_MIN_SAMPLES:
+                return 0.0
+            dists = sorted(self._feature_distance(feature, ref) for ref in bank)
+            k = min(3, len(dists))
+            return sum(dists[:k]) / k
 
         refs = self._reid_refs.get(track_id) or []
         if not refs:

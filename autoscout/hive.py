@@ -16,6 +16,30 @@ from typing import Dict, List, Optional
 from autoscout import season
 
 
+def measure_hive_level(cv2, np, frame, box, ranges, min_color_frac: float = 0.03) -> Optional[float]:
+    """Vertical centroid (0 = top, 1 = bottom of box) of the alliance color
+    inside box = (x0, y0, x1, y1), or None if too little of it is visible."""
+    x0, y0, x1, y1 = box
+    hsv = cv2.cvtColor(frame[y0:y1, x0:x1], cv2.COLOR_BGR2HSV)
+    mask = None
+    for lo, hi in ranges:
+        part = cv2.inRange(hsv, np.array(lo, dtype=np.uint8), np.array(hi, dtype=np.uint8))
+        mask = part if mask is None else cv2.bitwise_or(mask, part)
+    ys, _xs = np.nonzero(mask)
+    if len(ys) < min_color_frac * mask.size:
+        return None
+    return float(ys.mean()) / max(y1 - y0 - 1, 1)
+
+
+def hive_box_bounds(poly, w: int, h: int):
+    pts = poly.reshape(-1, 2)
+    x0 = max(0, int(pts[:, 0].min()))
+    x1 = min(w, int(pts[:, 0].max()) + 1)
+    y0 = max(0, int(pts[:, 1].min()))
+    y1 = min(h, int(pts[:, 1].max()) + 1)
+    return x0, y0, x1, y1
+
+
 @dataclass
 class TipEvent:
     alliance: str
@@ -59,11 +83,7 @@ class HiveTipDetector:
         for color, poly in tracker.hive_boxes.items():
             if color not in season.HIVE_HSV_RANGES:
                 continue
-            pts = poly.reshape(-1, 2)
-            x0 = max(0, int(pts[:, 0].min()))
-            x1 = min(w, int(pts[:, 0].max()) + 1)
-            y0 = max(0, int(pts[:, 1].min()))
-            y1 = min(h, int(pts[:, 1].max()) + 1)
+            x0, y0, x1, y1 = hive_box_bounds(poly, w, h)
             if x1 - x0 < 4 or y1 - y0 < 4:
                 continue
             self._boxes[color] = (x0, y0, x1, y1)
@@ -78,17 +98,13 @@ class HiveTipDetector:
 
     def measure(self, frame, color: str) -> Optional[float]:
         """Centroid height (0..1 of box) of the alliance color, or None."""
-        cv2, np = self.cv2, self.np
-        x0, y0, x1, y1 = self._boxes[color]
-        hsv = cv2.cvtColor(frame[y0:y1, x0:x1], cv2.COLOR_BGR2HSV)
-        mask = None
-        for lo, hi in season.HIVE_HSV_RANGES[color]:
-            part = cv2.inRange(hsv, np.array(lo, dtype=np.uint8), np.array(hi, dtype=np.uint8))
-            mask = part if mask is None else cv2.bitwise_or(mask, part)
-        ys, _xs = np.nonzero(mask)
-        if len(ys) < self.MIN_COLOR_FRAC * mask.size:
-            return None
-        return float(ys.mean()) / max(y1 - y0 - 1, 1)
+        return measure_hive_level(self.cv2, self.np, frame, self._boxes[color],
+                                  season.HIVE_HSV_RANGES[color], self.MIN_COLOR_FRAC)
+
+    def state(self, match_time_s: float) -> Dict[str, tuple]:
+        """{color: (last measured level or None, is_moving)} for the tracker."""
+        return {color: (self.last_level.get(color), self.is_moving(color, match_time_s))
+                for color in self._boxes}
 
     def update(self, frame, frame_num: int, match_time_s: float) -> List[TipEvent]:
         if not self._ready:

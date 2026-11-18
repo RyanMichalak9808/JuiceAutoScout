@@ -204,6 +204,7 @@ Most implementation details now live in `autoscout/`.
 
 - `autoscout/season.py`: game-specific settings for the current season (BIOBUZZ): ball colors, HIVE sides, field image, and camera-geometry switches. Start here when adapting to a new game.
 - `autoscout/hive.py`: `HiveTipDetector`, HIVE tip detection from the calibrated HIVE boxes.
+- `autoscout/match_start.py`: match start candidates from robot motion / POLLEN (used by `tools/find_match_start.py`).
 - `autoscout/tracker.py`: `RobotTracker`, foreground segmentation, blob extraction, assignment, merge handling, and track-state updates.
 - `autoscout/shot.py`: `ShotDetector`, ball-track association, HIVE target detection, and shot resolution.
 - `autoscout/helpers.py`: `FieldDetector`, manual re-ID loading, homography helper functions, and debug-wireframe helpers.
@@ -942,6 +943,31 @@ Important limitations:
 - it can miss shots that are heavily occluded or merge into other colored objects
 - it can confuse unusual passes or fast ball-handling events with shots if the trajectory looks goal-directed
 
+### 23b. Keeping robot labels (identity)
+
+The hard part of BIOBUZZ footage is keeping each label on the same robot when robots touch, pile up, or disappear behind the HIVE. These switches in `season.py` (all on for BIOBUZZ, all off reproduces the original DECODE tracker exactly) handle it:
+
+- `LOST_TRACK_RULES`:
+  - every track may only take a robot within `LOST_REACQ_SPEED_IN_S x seconds since last seen + LOST_REACQ_SLACK_IN` of where it was last seen, so no jumping across the field
+  - a lost track (not seen for more than `VISIBLE_COAST` frames) only re-acquires a robot standing on its own, never a piece of a pile
+  - a lost track's stale position no longer adds "a robot should be here" hints when splitting piles
+
+  Without this, hidden tracks jumped into piles for single frames and reappeared as ghosts at old positions.
+- `FOLLOW_TWO_ROBOT_MERGES`: two touching robots are handled like 3-4 robot piles. Each track follows its robot's peak inside the merged blob, and on separation the order along the contact axis decides who is who. The original 2-robot logic froze both tracks where contact started, and its swap check could never trigger.
+- `HIVE_STATE_BACKGROUND`: a background image of each HIVE box is learned for both HIVE positions, so robots behind or under the HIVE stay detectable. The box is only removed from robot detection while that HIVE is tipping.
+- `AUTO_REID`: each robot's look (hue-saturation histogram) is learned while it is tracked on its own. The first 20 samples are kept for good, plus a rolling 20 recent ones.
+- `APPEARANCE_ID_CORRECTION`: while robots are on their own, each tracked robot is compared with every robot's early samples. If the labels are consistently (`IDFIX_VOTES` frames, margin `IDFIX_MARGIN`) better explained by a different assignment, such as two labels swapped, three rotated, or a robot that belongs to a hidden label, the labels are moved back. This is logged as `Identity correction by appearance: ...`.
+
+In the debug video a hidden robot keeps a hollow `R#?` marker at its last known position instead of disappearing.
+
+How well it works on the Piper Meet examples (640x360):
+
+- q9: impossible label jumps (faster than 90 in/s) fell from 421 to 56, and duplicate labels on one robot from 4% of rows to 0.5%
+- q11: impossible label jumps fell from 264 to 61, and duplicate labels from 8% to 1%
+- DECODE example: duplicates fell from 46% to 0% and impossible jumps from 37 to 5
+
+The q9 three-way swap at 34-46 s (labels rotating between the purple robot and the two silver robots while hidden behind the red HIVE) is fixed by appearance correction. Labels are not guaranteed correct everywhere: when robots of similar color are hidden together, the appearance evidence can be weak and a correction can be wrong. Hand-labeled references (`--manual-reference-csv`, made with `tools/manual_tracker.html`) give the strongest appearance model, and higher-resolution footage helps most.
+
 ### 24. HIVE tip detection (`autoscout/hive.py`)
 
 Each HIVE is a bi-stable seesaw. Inside its calibrated `hive_boxes_px` box, the alliance-colored pixels (`season.HIVE_HSV_RANGES`) sit at one of two heights depending on which CELL faces up, and jump when the HIVE tips. `HiveTipDetector` tracks the vertical centroid of those pixels (0 = top of the box, 1 = bottom) every processed frame:
@@ -964,11 +990,11 @@ Besides the per-frame outputs, every run writes:
 - `hive_tips.csv`: `alliance, tip_number, match_time_s, match_clock, phase, video_time_s, frame, level_before, level_after`
 - `shot_events.csv`: `match_time_s, match_clock, phase, video_time_s, frame, robot, result, hive, shooter_x_in, shooter_y_in`
 
-`match_time_s` is seconds since `--start-offset`. `phase` is `auto` (0-30 s), `transition` (30-38 s), `teleop` (38-158 s) or `after_end` (`season.AUTO_END_S`, `TELEOP_START_S`, `MATCH_END_S`). `match_clock` approximates the broadcast clock (2:30 to 2:00 in auto, held at 2:00 during the transition, 2:00 to 0:00 in teleop), and `video_time_s` is the position in the source video, for checking events by hand. A summary of tips per alliance and shots per robot is printed at the end of the run.
+`match_time_s` is seconds since `--start-offset`. The broadcast clock and scoreboard are not reliable (the clock can start seconds late, and things can go unscored), so nothing in the pipeline reads them. `video_time_s` is always exact; `match_time_s`, `match_clock` and `phase` are only as good as `--start-offset`. `tools/find_match_start.py` suggests start candidates from the video itself (first parked robot driving away, first POLLEN moving inside a HIVE box) and saves frames around each candidate to confirm by eye. `phase` is `auto` (0-30 s), `transition` (30-38 s), `teleop` (38-158 s) or `after_end` (`season.AUTO_END_S`, `TELEOP_START_S`, `MATCH_END_S`). `match_clock` approximates the broadcast clock (2:30 to 2:00 in auto, held at 2:00 during the transition, 2:00 to 0:00 in teleop), and `video_time_s` is the position in the source video, for checking events by hand. A summary of tips per alliance and shots per robot is printed at the end of the run.
 
 ### 26. Debug overlay (BIOBUZZ additions)
 
-- robot dots are drawn at the floor-contact point
+- robot dots are drawn at the floor-contact point; hidden robots keep a hollow `R#?` marker at their last known position
 - arrows show each robot's actual motion over the last 0.5 s: length grows with speed and the speed is printed in in/s; no arrow below 3 in/s
 - robot-sized shapes with no visible track on them are labeled `no track`
 - each HIVE box shows a thin line at the measured color level and a running `tips` count

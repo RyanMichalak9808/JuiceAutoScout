@@ -78,6 +78,26 @@ INIT_STABLE_IN = 4.0
 # visible (duplicate robots). False = previous behavior.
 PROTECT_VISIBLE_FROM_LOST = True
 
+# Rules for lost tracks (robot not seen for more than VISIBLE_COAST frames,
+# e.g. hidden behind the HIVE or inside a pile of robots). With True:
+# - a lost track may only re-acquire a robot standing on its own (an unsplit
+#   blob), never a piece of a merged blob,
+# - every track (lost or not) may only take a robot within
+#   LOST_REACQ_SPEED_IN_S * (seconds since last seen) + LOST_REACQ_SLACK_IN
+#   of where it was last seen (no jumping across the field),
+# - its stale position no longer adds "a robot should be here" hints when
+#   splitting merged blobs.
+# Without these, lost tracks jumped into piles of robots for single frames and
+# reappeared as ghosts at old positions (labels swapping between robots).
+LOST_TRACK_RULES = True
+LOST_REACQ_SPEED_IN_S = 80.0
+LOST_REACQ_SLACK_IN = 24.0
+
+# Learn what each robot looks like (color histogram) while it is tracked on its
+# own, and use that to decide which track a robot belongs to when it reappears
+# or leaves a pile. Off = appearance is only used with --manual-reference-csv.
+AUTO_REID = True
+
 # Static-blob suppression drops blobs that have not moved for a while unless
 # a robot track is nearby. With True, a lost (temporarily invisible) track
 # also counts, so a parked robot whose track dropped out for a moment is not
@@ -97,3 +117,26 @@ RESET_VELOCITY_ON_JUMP = True
 # With True, the tracker measures the typical single-robot blob at
 # initialization and scales the thresholds by it (clamped to 0.3-1.2).
 AUTO_ROBOT_AREA = True
+
+# Learn a background image of each HIVE for each of its two resting positions,
+# so robots driving behind/under the HIVE stay detectable. The HIVE box is only
+# removed from robot detection while that HIVE is tipping (or its position is
+# unknown). False = HIVE boxes are always removed from robot detection.
+HIVE_STATE_BACKGROUND = True
+
+# Two robots in contact: with True they are handled like 3-4 robot piles -
+# each track follows its robot's peak inside the merged blob, and on separation
+# the left-to-right order along the contact axis decides who is who. The
+# original 2-robot logic froze both tracks where the contact started (so a
+# robot pushed 30 in during contact was lost on separation) and its swap check
+# could never trigger. False = original behavior.
+FOLLOW_TWO_ROBOT_MERGES = True
+
+# Identity correction by appearance: each robot's look is learned from its
+# first isolated samples (AUTO_REID early bank). While robots are on their own,
+# the tracker keeps comparing each tracked robot with every robot's learned
+# look; if the labels are consistently better explained by a different
+# assignment (two labels swapped, three rotated, or a robot that belongs to a
+# currently hidden label), the labels are moved back. Fixes swaps after
+# robots were hidden or merged together. Needs AUTO_REID.
+APPEARANCE_ID_CORRECTION = True

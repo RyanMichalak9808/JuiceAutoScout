@@ -203,11 +203,37 @@ Where the extra time goes:
 
 So the current fingerprint stays as it is. Core sampling is kept as a switch, off by default, to re-test on higher-resolution footage, where floor bleed is a bigger share of the outline.
 
+### 6. Third test video: China Shanghai #2 Qualifier, Playoff Match 5 (sixth commit)
+
+**About the video:**
+- **Camera and overlay:** a different venue and camera: lower and wider, with the overlay along the top.
+- **Video:** 25 fps.
+- **Crowding:** many more tips (red 13, blue 8), people in yellow vests behind the field, and a referee walking in front of the camera.
+- **Files:** added as `examples/shanghai_q2_playoff5.mp4` with its calibration (overlay band excluded).
+- **Start offset:** 1.7 s, taken from robot motion. The robots start driving about 1 s before the on-screen clock appears.
+
+**Results:**
+- **HIVE tips:** 13 red, 8 blue, exactly the final broadcast counters. Three more after the match are labeled `after_end` (field reset).
+- **Robot tracking:** worse than on the Piper videos at first: duplicate labels in 5.7% of rows, 275 impossible label jumps.
+
+**Fixes:**
+- **Front-rail splits:** robots parked against the front wall were cut in two by the wall's top rail. Fix: a small vertical join (`FG_VERTICAL_CLOSE_PX`) plus a stronger one only in a band along the front wall line (`FRONT_RAIL_CLOSE_PX`, `FRONT_RAIL_BAND_PX`).
+- **Robot size measurement:** the single-robot size measured from those pieces and from people at the field edge was 0.30x, the lowest allowed. That made real robots look like two. Fix: implausible shapes are ignored (`AUTO_ROBOT_AREA_RANGE`), and the size is refined from the first robots tracked clearly on their own (`AUTO_ROBOT_AREA_SAMPLES`). It now measures 0.77x on this camera.
+- **Starting lineup:** it put two labels 2 in apart on the two pieces of one robot. Fix: starting robots must be at least one robot width (18 in) apart.
+- **Huge shapes:** shapes bigger than 6 robots (a person in front of the camera) are no longer split into "robots" (`MAX_BLOB_ROBOTS`).
+- **Tried and left off:** labels inside a pile that get no robot peak for 2 s are released (`MERGE_UNSEEN_RELEASE_S`). It is off by default: the released label rejoined the same pile a moment later, and overall jumps and duplicates got slightly worse on all three videos.
+
+**After the fixes:** Shanghai duplicate labels 5.7% -> 1.4%, label jumps 275 -> 174. On the Piper videos the numbers stayed about the same (q9 53 jumps / 0.7% duplicates, q11 56 / 0.9%). All tips are still exact on all three videos.
+
+**Still wrong in Shanghai:**
+- **Stuck label:** from about 14 to 38 s one label (R3) stays stuck next to a large robot near the camera at the front-right, while the fourth robot is hidden behind the blue HIVE.
+- **Referee:** when the referee walks onto the edge of the field area (around 50 s), labels can latch onto them for a moment.
+
 ## Results on the example videos
 
 | | Original / first version | Now |
 |---|---|---|
-| HIVE tips vs broadcast counter (q9 + q11) | not available | 13 / 13 |
+| HIVE tips vs broadcast counter (q9 + q11 + Shanghai) | not available | 34 / 34 |
 | q9 impossible label jumps (faster than 90 in/s) | 421 | 56 |
 | q11 impossible label jumps | 264 | 61 |
 | Duplicate labels on one robot, BIOBUZZ | 4-8% of frames | under 1% |
@@ -235,6 +261,9 @@ The switches:
 - `AUTO_REID`
 - `APPEARANCE_ID_CORRECTION`
 - `REID_CORE_FRAC` (off by default)
+- `FG_VERTICAL_CLOSE_PX`, `FRONT_RAIL_CLOSE_PX` (set to 0 to turn off)
+- `MAX_BLOB_ROBOTS` (set to 0 to turn off)
+- `MERGE_UNSEEN_RELEASE_S` (off by default)
 
 ## Known limitations
 

@@ -147,7 +147,11 @@ python3 auto_scout.py --no-download --video-path examples/piper_q9.mp4 --corners
 python3 auto_scout.py --no-download --video-path examples/piper_q11.mp4 --corners examples/piper_q11_corners.json --start-offset 6 --debug-video --debug-every 3
 ```
 
-HIVE tips are detected from the HIVE boxes and written to `hive_tips.csv`; on these two videos they match the broadcast tip counters exactly.
+```bash
+python3 auto_scout.py --no-download --video-path examples/shanghai_q2_playoff5.mp4 --corners examples/shanghai_q2_playoff5_corners.json --start-offset 1.7 --debug-video --debug-every 3
+```
+
+HIVE tips are detected from the HIVE boxes and written to `hive_tips.csv`; on these three videos they match the broadcast tip counters exactly (34 tips).
 
 ## Repository Layout
 

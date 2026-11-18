@@ -116,7 +116,10 @@ class RobotTracker:
         # Typical single-robot blob area / (18 in robot size)^2; learned at
         # initialization when season.AUTO_ROBOT_AREA is on.
         self._single_area_ratio = 1.0
+        self._area_samples: List[float] = []
         self._field_mask_open = None   # field mask without HIVE boxes removed
+        self._front_band = None        # band around the front wall line
+        self._peak_seen_t: List[Optional[float]] = [None] * 4
         self._hive_bg: Dict[str, dict] = {}
         self._hive_state: Dict[str, tuple] = {}
         # Time awareness (seconds, from update(time_s=...)) and auto re-ID.
@@ -212,6 +215,14 @@ class RobotTracker:
         for ex in self.exclude_polys:
             cv2.fillPoly(shot_region, [ex], 0)
         self._shot_region_mask = shot_region
+
+        # Band around the front wall (bottom edge BL-BR) for the rail join.
+        self._front_band = None
+        if season.FRONT_RAIL_CLOSE_PX and season.FRONT_RAIL_BAND_PX:
+            half = max(2, int(round(season.FRONT_RAIL_BAND_PX * w / 640.0)))
+            band = np.zeros((h, w), dtype=np.uint8)
+            cv2.line(band, (int(bl[0]), int(bl[1])), (int(br[0]), int(br[1])), 255, 2 * half + 1)
+            self._front_band = band
 
         # Exclusion areas (clock, overlays) are never used. HIVE boxes are
         # removed from robot detection too, unless the per-position HIVE
@@ -498,6 +509,8 @@ class RobotTracker:
             active_keys.add(key)
             if key not in self._merge_groups:
                 self._merge_groups[key] = self._create_merge_group(tlist, pid)
+                for tid in tlist:
+                    self._peak_seen_t[tid] = self._now
                 print("[INFO] Merge started: tracks {}".format(sorted(tlist)))
             mg = self._merge_groups[key]
             mg.parent_id = pid
@@ -516,6 +529,8 @@ class RobotTracker:
                     self._apply_separation(mg)
 
         self._prune_post_merge_duplicate_assignments(blobs, assignment)
+
+        self._release_unseen_merge_members()
 
         # tracks inside a 2-robot merge have positions frozen (handled below)
         # tracks inside a 3+ robot merge get positions from peak_assignment
@@ -556,6 +571,7 @@ class RobotTracker:
                     feature = blobs[assignment[i]][9] if len(blobs[assignment[i]]) > 9 else None
                     self._track_features[i] = feature
                     self._maybe_add_auto_ref(i, blobs, assignment)
+                    self._maybe_refine_robot_area(i, blobs, assignment)
                     self._update_post_merge_lock(i, (fx, fy), (cx, cy))
                     self.tracked_poses[i].heading = self._motion_heading(
                         i, self.tracked_poses[i].heading)
@@ -696,6 +712,7 @@ class RobotTracker:
     def _learn_single_robot_area(self, blobs) -> None:
         if not season.AUTO_ROBOT_AREA:
             return
+        lo, hi = season.AUTO_ROBOT_AREA_RANGE
         ratios = []
         seen = set()
         for b in blobs:
@@ -703,7 +720,9 @@ class RobotTracker:
                 continue
             seen.add(b[3])
             px = self._contour_robot_px(b[8])
-            ratios.append(float(self.cv2.contourArea(b[8])) / max(px * px, 1.0))
+            ratio = float(self.cv2.contourArea(b[8])) / max(px * px, 1.0)
+            if lo <= ratio <= hi:
+                ratios.append(ratio)
         if len(ratios) < 2:
             return
         ratios.sort()
@@ -711,6 +730,29 @@ class RobotTracker:
         self._single_area_ratio = min(max(median, 0.3), 1.2)
         print("[INFO] Single-robot blob size: {:.2f}x an 18 in square (from {} robots).".format(
             self._single_area_ratio, len(ratios)))
+
+    def _maybe_refine_robot_area(self, track_id: int, blobs, assignment: Dict[int, int]) -> None:
+        """Refine the single-robot size from robots tracked clearly on their own."""
+        if not season.AUTO_ROBOT_AREA or len(self._area_samples) >= season.AUTO_ROBOT_AREA_SAMPLES:
+            return
+        if not self._isolated_assignment(track_id, blobs, assignment):
+            return
+        contour = blobs[assignment[track_id]][8]
+        if contour is None:
+            return
+        px = self._contour_robot_px(contour)
+        ratio = float(self.cv2.contourArea(contour)) / max(px * px, 1.0)
+        lo, hi = season.AUTO_ROBOT_AREA_RANGE
+        if not lo <= ratio <= hi:
+            return
+        self._area_samples.append(ratio)
+        n = len(self._area_samples)
+        if n >= 15 and n % 5 == 0:
+            ordered = sorted(self._area_samples)
+            new = min(max(ordered[n // 2], 0.3), 1.2)
+            if abs(new - self._single_area_ratio) > 0.02:
+                print("[INFO] Single-robot blob size refined: {:.2f}x (from {} isolated samples).".format(new, n))
+            self._single_area_ratio = new
 
     def _stable_init_blobs(self, blobs):
         n = max(1, int(season.INIT_STABLE_FRAMES))
@@ -741,6 +783,11 @@ class RobotTracker:
             # single blob split into pieces (robot + a person's arm, ...) must
             # not seed several tracks.
             if len({b[3] for b in combo}) < count:
+                continue
+            # two starting robots cannot be closer than one robot width
+            if season.INIT_STABLE_FRAMES > 1 and any(
+                    math.hypot(a[0] - b[0], a[1] - b[1]) < self.ROBOT_SIZE_IN
+                    for a, b in itertools.combinations(combo, 2)):
                 continue
             lineup = sorted(combo, key=lambda b: b[0])
             spacing_penalty = 0.0
@@ -1042,6 +1089,36 @@ class RobotTracker:
             entry_features = entry_features,
         )
 
+    def _release_unseen_merge_members(self) -> None:
+        limit = season.MERGE_UNSEEN_RELEASE_S
+        if not limit or self._now is None:
+            return
+        for key in list(self._merge_groups.keys()):
+            mg = self._merge_groups[key]
+            if not self._uses_multi_merge(mg):
+                continue
+            unseen = [tid for tid in mg.track_ids
+                      if self._peak_seen_t[tid] is not None
+                      and self._now - self._peak_seen_t[tid] > limit]
+            if not unseen:
+                continue
+            for tid in unseen:
+                mg.track_ids.remove(tid)
+                mg.peak_assignment.pop(tid, None)
+                if tid in mg.entry_order:
+                    mg.entry_order.remove(tid)
+                if tid in mg.current_order:
+                    mg.current_order.remove(tid)
+                mg.order_votes.pop(tid, None)
+                self._coast[tid] = self.VISIBLE_COAST + 1
+                self._merge_recent[tid] = 0
+                self.tracked_poses[tid].visible = False
+            del self._merge_groups[key]
+            if len(mg.track_ids) >= 2:
+                self._merge_groups[frozenset(mg.track_ids)] = mg
+            print("[INFO] Released track(s) {} from a pile: no robot seen for them for {:.0f} s.".format(
+                sorted(int(t) for t in unseen), limit))
+
     def _uses_multi_merge(self, mg: MergeGroup) -> bool:
         return len(mg.track_ids) > 2 or season.FOLLOW_TWO_ROBOT_MERGES
 
@@ -1061,6 +1138,21 @@ class RobotTracker:
         # rather than silently doing nothing.  This preserves the last good state.
         if len(peaks) < 2:
             # Fully overlapping — can't distinguish positions; preserve state.
+            # (With MERGE_UNSEEN_RELEASE_S the one visible peak still counts
+            # as an observation of the nearest label.)
+            if season.MERGE_UNSEEN_RELEASE_S and len(peaks) == 1 and n > 2 - 1:
+                px, py = peaks[0]
+                best = None
+                for tid in mg.track_ids:
+                    cur = mg.peak_assignment.get(tid) or self._pos_px[tid]
+                    if cur is None:
+                        continue
+                    d = math.hypot(px - cur[0], py - cur[1])
+                    if best is None or d < best[0]:
+                        best = (d, tid)
+                if best is not None and self._uses_multi_merge(mg):
+                    mg.peak_assignment[best[1]] = (px, py)
+                    self._peak_seen_t[best[1]] = self._now
             return
 
         M = cv2.moments(contour)
@@ -1127,6 +1219,7 @@ class RobotTracker:
                 new_assignment[tid] = sorted_peaks[best_k]
                 used_peaks.add(best_k)
                 successfully_assigned += 1
+                self._peak_seen_t[tid] = self._now
 
         mg.peak_assignment = new_assignment
 
@@ -1461,6 +1554,17 @@ class RobotTracker:
         fg = cv2.bitwise_and(fg, field_mask)
         fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, self._kern)
         fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN,  self._kern)
+        vclose = season.FG_VERTICAL_CLOSE_PX
+        if vclose and vclose > 1:
+            k = max(2, int(round(vclose * fg.shape[1] / 640.0)))
+            fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE,
+                                  cv2.getStructuringElement(cv2.MORPH_RECT, (1, k)))
+        if self._front_band is not None:
+            k = max(2, int(round(season.FRONT_RAIL_CLOSE_PX * fg.shape[1] / 640.0)))
+            closed = cv2.morphologyEx(fg, cv2.MORPH_CLOSE,
+                                      cv2.getStructuringElement(cv2.MORPH_RECT, (1, k)))
+            fg = np.where(self._front_band > 0, closed, fg).astype(np.uint8)
+            fg = cv2.bitwise_and(fg, field_mask)
 
         if self._neck_kern is not None:
             fg = cv2.erode(fg,  self._neck_kern)
@@ -1688,6 +1792,10 @@ class RobotTracker:
             field_area = self._contour_field_area_in2(c)
             if field_area < self.BLOB_MIN_FIELD_AREA_IN2:
                 continue
+            if season.MAX_BLOB_ROBOTS:
+                rpx = self._contour_robot_px(c)
+                if area > season.MAX_BLOB_ROBOTS * rpx * rpx * self._single_area_ratio:
+                    continue   # person in front of the camera, not robots
             _bm = np.zeros(self._field_mask.shape, dtype=np.uint8)
             cv2.drawContours(_bm, [c], -1, 255, -1)
             _dr = cv2.distanceTransform(_bm, cv2.DIST_L2, 5)

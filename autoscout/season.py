@@ -153,3 +153,36 @@ APPEARANCE_ID_CORRECTION = True
 # distinctive color, while the foreground mask already excludes most floor.
 # Off by default; worth re-testing on higher-resolution footage.
 REID_CORE_FRAC = None
+
+# Join pieces of one robot split by a thin horizontal bar in front of it (the
+# top rail of the front field wall cuts robots parked against it in two).
+# Vertical closing height in pixels at 640 px wide video; 0 = off.
+FG_VERTICAL_CLOSE_PX = 7
+# Along the front wall the rail is thicker in the image (closer to the
+# camera), so a stronger vertical join is used in a band around the front
+# wall line only (height of the join and half-height of the band, px at 640).
+FRONT_RAIL_CLOSE_PX = 16
+FRONT_RAIL_BAND_PX = 18
+
+# Ignore foreground blobs bigger than this many robots (a referee or
+# spectator standing in front of the camera) instead of splitting them into
+# "robots". 0 = off.
+MAX_BLOB_ROBOTS = 6.0
+
+# AUTO_ROBOT_AREA: blobs whose size is implausible for one robot (in units of
+# an 18 in square) are ignored when measuring the single-robot size, and the
+# measurement is refined from the first AUTO_ROBOT_AREA_SAMPLES robots seen
+# clearly on their own.
+AUTO_ROBOT_AREA_RANGE = (0.25, 1.6)
+AUTO_ROBOT_AREA_SAMPLES = 30
+
+# Inside a pile of robots (merge group) a label only counts as seen when a
+# real robot peak in the merged blob is matched to it. A label with no peak
+# for this many seconds leaves the pile and becomes lost (so it can pick its
+# robot up again elsewhere) instead of staying frozen and "visible" inside a
+# pile its robot already left. 0 = off (original: all labels in a pile stay
+# visible, frozen at their last peak).
+# Off by default: on the Shanghai example the released label rejoined the
+# same pile a moment later (release/rejoin cycles), and overall label jumps
+# and duplicates got slightly worse on all three example videos.
+MERGE_UNSEEN_RELEASE_S = 0.0

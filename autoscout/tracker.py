@@ -1858,6 +1858,16 @@ class RobotTracker:
             shifted[:, 0, 1] -= y0
             contour_mask = np.zeros_like(mask)
             cv2.drawContours(contour_mask, [shifted], -1, 255, -1)
+            core = season.REID_CORE_FRAC
+            if core is not None and 0.0 < core < 1.0:
+                # keep the deepest `core` fraction of the outline's pixels
+                dist = cv2.distanceTransform(contour_mask, cv2.DIST_L2, 3)
+                inside = dist[contour_mask > 0]
+                if inside.size >= 20:
+                    cut = float(np.percentile(inside, (1.0 - core) * 100.0))
+                    core_mask = ((dist > cut) & (contour_mask > 0)).astype(np.uint8) * 255
+                    if int(np.count_nonzero(core_mask)) >= 10:
+                        contour_mask = core_mask
             mask = cv2.bitwise_and(mask, contour_mask)
 
         hist = cv2.calcHist(

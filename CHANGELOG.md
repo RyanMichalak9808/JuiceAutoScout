@@ -177,6 +177,32 @@ Where the extra time goes:
 - **Why:** the clock and scoreboard are not reliable, so nothing in the pipeline reads them.
 - **Reasoning:** neither cue is reliable alone on these streams, so the tool suggests candidates instead of setting the start automatically.
 
+### 5. Color-based robot identification options (fifth commit)
+
+**Suggestion:** track each robot by its colors as a backup when tracking is lost or jumps. Use HSV with brightness (V) down-weighted, and sample the inner 60-70% of the robot so floor at the edges doesn't wash the colors out.
+
+**What already existed:** `AUTO_REID` and `APPEARANCE_ID_CORRECTION` (section 4) already do this kind of color backup. Each robot's colors are learned while it is on its own and used when it reappears or when labels look swapped. The fingerprint uses hue and saturation only; brightness is ignored entirely, so shadows do not change it.
+
+**Added:** a `REID_CORE_FRAC` switch that samples only the inner fraction of each robot's outline.
+
+**Tested** on frames of the q9 example where the identity of every robot is known (18 robot samples, each matched to the nearest sample of a robot from other frames):
+
+| Fingerprint | Correct robot | Margin (other robot - own robot) |
+|---|---|---|
+| Hue + saturation, whole outline (current) | **16 / 18** | 0.107 |
+| Inner 80% of the outline | 15 / 18 | 0.095 |
+| Inner 65% | 14 / 18 | 0.088 |
+| Inner 50% | 13 / 18 | 0.078 |
+| + brightness at weight 0.15 | 16 / 18 | 0.100 |
+| + brightness at weight 0.30 | 15 / 18 | 0.094 |
+
+**Reasoning:**
+- At 640x360 a robot is only 30-40 px wide, so its edges (bumpers, number plates) carry the most distinctive colors.
+- The outline comes from the foreground mask, which already excludes most of the floor.
+- Adding brightness back makes matching slightly worse.
+
+So the current fingerprint stays as it is. Core sampling is kept as a switch, off by default, to re-test on higher-resolution footage, where floor bleed is a bigger share of the outline.
+
 ## Results on the example videos
 
 | | Original / first version | Now |
@@ -208,6 +234,7 @@ The switches:
 - `HIVE_STATE_BACKGROUND`
 - `AUTO_REID`
 - `APPEARANCE_ID_CORRECTION`
+- `REID_CORE_FRAC` (off by default)
 
 ## Known limitations
 

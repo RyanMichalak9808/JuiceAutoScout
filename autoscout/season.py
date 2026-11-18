@@ -140,3 +140,16 @@ FOLLOW_TWO_ROBOT_MERGES = True
 # currently hidden label), the labels are moved back. Fixes swaps after
 # robots were hidden or merged together. Needs AUTO_REID.
 APPEARANCE_ID_CORRECTION = True
+
+# Robot color fingerprints (AUTO_REID) use hue and saturation only, so
+# brightness changes (shadows, venue lighting) do not change them. With
+# REID_CORE_FRAC set, only the inner part of the robot's outline is sampled
+# (the given fraction of its area, deepest pixels first), so grey floor tiles
+# bleeding into the outline edges do not wash out the robot's colors.
+# None = sample the whole outline (previous behavior).
+# Tested on the Piper Meet example (640x360): whole outline identified robots
+# 16/18 times, inner 80% 15/18, 65% 14/18, 50% 13/18 - at this resolution a
+# robot is only 30-40 px wide and its edges (bumpers, plates) carry the most
+# distinctive color, while the foreground mask already excludes most floor.
+# Off by default; worth re-testing on higher-resolution footage.
+REID_CORE_FRAC = None

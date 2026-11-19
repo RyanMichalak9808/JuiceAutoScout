@@ -7,7 +7,8 @@ This file is a running summary of the changes made to AutoScout to adapt it from
 - **New season:** POLLEN (yellow) shots into the red / blue HIVE, HIVE tip counting, and the BIOBUZZ field image.
 - **New camera:** a low, audience-side event stream (640x360, blurry) instead of the high overhead DECODE World Championship broadcast.
 - **Robot labels:** the main problem on the test videos was robot labels swapping or disappearing after collisions and behind the HIVE. Most of the tracker work went there.
-- **Shots and setup (latest round):** the shot detector was rewritten for steep, vertical shots and now follows balls on every frame. Field corners, HIVE boxes and FLOWER boxes are detected automatically for every match, and the dashboard asks for approval of that calibration before tracking starts. Referees and people off the field are filtered out of robot and ball detection.
+- **Scouting analytics:** per-alliance tip timing (AUTO tips, cycle pace, endgame behavior), per-robot movement red flags, a shot heatmap and a loose game-piece density map, written for every match.
+- **Shots and setup:** the shot detector was rewritten for steep, vertical shots and now follows balls on every frame. Field corners, HIVE boxes and FLOWER boxes are detected automatically for every match, and the dashboard asks for approval of that calibration before tracking starts. Referees and people off the field are filtered out of robot and ball detection.
 - **Original behavior preserved:** every new behavior is behind a switch in `autoscout/season.py`. With the switches set back to their DECODE values, the tracker reproduces the original DECODE output exactly (0 differences over 6,128 rows of `examples/joosmatch.mp4`, rechecked after every round).
 
 ## Size of the change compared with the original repo
@@ -23,7 +24,7 @@ Measured with `git diff 4d1be90 HEAD`. Example videos and images are excluded.
 | `autoscout/shot.py` | 470 | 536 | +14% (most of the logic rewritten) |
 | `auto_scout.py` | 809 | 1,061 | +31% |
 | `autoscout/dashboard_server.py` | 950 | 1,132 | +19% |
-| New files | | | `autoscout/season.py`, `autoscout/field_detect.py`, `autoscout/hive.py`, `autoscout/match_start.py`, `dashboard_static/calib_editor.js`, `tools/find_match_start.py`, `assets/biobuzz-field.png`, `CHANGELOG.md`, three example videos and their calibrations |
+| New files | | | `autoscout/season.py`, `autoscout/analytics.py`, `autoscout/field_detect.py`, `autoscout/hive.py`, `autoscout/match_start.py`, `dashboard_static/calib_editor.js`, `tools/find_match_start.py`, `assets/biobuzz-field.png`, `CHANGELOG.md`, three example videos and their calibrations |
 
 Most of the work is added code behind switches; apart from the shot detector, little original code was rewritten.
 
@@ -296,6 +297,33 @@ So the current fingerprint stays as it is. Core sampling is kept as a switch, of
 - **Old behavior:** the DECODE regression (switches off) is still 0 differences over 6,128 rows.
 
 **Not yet handled:** a referee's legs that stand inside the field area and don't reach the bottom of the picture can still be detected as foreground. Tracks won't jump to them across the field, and shapes bigger than 6 robots are ignored.
+
+### 8. Match analytics, shot heatmap and resource density (eighth commit)
+
+**Why:** with roughly 70% accurate detection, single events are noisy, but per-match aggregates compared across a team's 5-6 qualification matches still separate a robot that carries its alliance from one whose numbers come from lucky partner pairings, and they show unreliable robots quickly.
+
+**New `autoscout/analytics.py`, written at the end of every run:**
+- **`alliance_summary.csv`** (from the timestamped tip log):
+  - AUTO tips (first 30 s): teams with a real autonomous HIVE routine;
+  - median and mean seconds between tips: scoring pace; still meaningful when a tip in the middle is missed;
+  - tips in the final 60 s and final 15 s: a drop after the FLOWERS unlock suggests a FLOWER / Garden pivot, and tips in the last 15 s mark full-match HIVE cyclers.
+- **`robot_summary.csv`:** distance, % of time moving, longest stall, field coverage, time on each half, shots made / missed, and red flags: a stall of 30 s or more, never leaving one half, barely moving. Positions jumping faster than 150 in/s and time while hidden are ignored.
+- **`shot_heatmap.png`:** shooter positions on the BIOBUZZ field image, made green / missed red, with a density glow.
+- **`resource_density.csv` / `.png`:** every 2 s, loose POLLEN (yellow) and red / blue NECTAR are found on the floor (small round ball-sized blobs; robots, people and FLOWER boxes are left out, since red / blue are also bumper colors). They're drawn on the field map with the share of POLLEN on each half early vs late in the match, showing which side runs dry first.
+- **Run summary:** the end-of-run printout lists each alliance's tip pattern and any robot red flags.
+
+**Field image:** the standalone data visualizer now loads the BIOBUZZ field image from either location (opened from `tools/` or served by the dashboard). The dashboard already used it.
+
+**Checked:**
+- q9 and Shanghai produce all files;
+- Shanghai: red median 11 s between tips, blue 21 s;
+- q9: no red flags with a 30 s stall limit (robots parked to shoot for about 20 s);
+- the DECODE regression is still 0 differences.
+
+**Limits:**
+- R0-R3 are tracker labels, not teams.
+- Resource detection is approximate: red / blue items near walls can still be miscounted as NECTAR.
+- Cost: about 20 ms every 2 s for resource sampling plus about 1 s at the end.
 
 ## Results on the example videos
 

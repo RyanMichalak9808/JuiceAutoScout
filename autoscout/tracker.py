@@ -1617,6 +1617,7 @@ class RobotTracker:
         if ball_mask is not None:
             fg = cv2.bitwise_and(fg, cv2.bitwise_not(ball_mask))
 
+        self._last_fg = fg
         return fg
 
     def _off_field_people(self, raw_fg):

@@ -1,5 +1,5 @@
 import math
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 from autoscout import season
 from autoscout.models import BallTrack, ShotEvent

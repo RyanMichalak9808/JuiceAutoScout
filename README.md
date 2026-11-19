@@ -196,6 +196,14 @@ When a run finishes, the output directory typically contains:
   One row per HIVE tip (alliance, match time, approximate broadcast clock, phase, video time).
 - `shot_events.csv`
   One row per resolved shot (robot, made/missed, HIVE, shooter position, times).
+- `alliance_summary.csv`
+  Per alliance: tips, auto tips, tips in the final 60 s / 15 s, first / last tip time, median time between tips (cycle cadence) and notes ("scores in AUTO", "stopped tipping in the final 60 s", "full-match HIVE cycler").
+- `robot_summary.csv`
+  Per robot track: distance driven, % of time moving, longest stall, field coverage, time on the left half, shots made / missed and red flags (long stall, never left one half, barely moved). Compare across a team's matches, after mapping R0-R3 to team numbers.
+- `shot_heatmap.png`
+  Shooter positions on the BIOBUZZ field map (made green, missed red).
+- `resource_density.csv` / `resource_density.png`
+  Loose POLLEN and red / blue NECTAR on the floor sampled every 2 s, drawn on the field map, with the share of POLLEN on each half early vs late in the match.
 - `match_log.wpilog`
   WPILOG output using center-origin coordinates converted to meters with the viewer-facing axis remap `x' = y`, `y' = x`, and `heading' = π/2 - heading`.
 - `median_background.jpg`

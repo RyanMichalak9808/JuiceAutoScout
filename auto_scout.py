@@ -17,6 +17,7 @@ from autoscout.helpers import (
 from autoscout import season
 from autoscout.match_timer import scan_match_bounds
 from autoscout.runtime import _make_bar, _require, install_console_output
+from autoscout import analytics
 from autoscout.field_detect import FieldCalibrator, draw_calibration
 from autoscout.hive import HiveTipDetector
 from autoscout.shot import ShotDetector
@@ -358,6 +359,7 @@ def process_match(
     next_debug_source_frame = start_frame
     dashboard_preview_every = max(debug_every_n, _dashboard_preview_interval()) if dashboard_stream_previews else max(1, debug_every_n)
     last_poses = None
+    resource_sampler = analytics.ResourceSampler(cv2, np)
     glitch_frames = 0
     pending_shot_events = []
     shot_detector._fps = video_fps
@@ -419,6 +421,8 @@ def process_match(
         tracker.set_hive_state(hive_detector.state(match_time_s))
         poses = tracker.update(frame, time_s=match_time_s)
         last_poses = poses
+        if 0.0 <= match_time_s <= season.MATCH_END_S:
+            resource_sampler.maybe_sample(frame, match_time_s, tracker)
         shot_events = pending_shot_events + shot_detector.update(
             current_frame_num, match_time_s, poses, tracker,
             hive_moving=lambda color: hive_detector.is_moving(color, match_time_s))
@@ -673,6 +677,19 @@ def process_match(
     print("  TIPS:   {}".format(tips_path))
     print("  SHOTS:  {}".format(shots_path))
     _print_event_summary(tip_log, shot_log)
+    try:
+        alliances, robots = analytics.write_all(cv2, np, output_dir, csv_path, tip_log, shot_log,
+                                                resource_sampler.samples)
+        print("  Analytics: alliance_summary.csv, robot_summary.csv, shot_heatmap.png, resource_density.png")
+        for a in alliances:
+            print("    {:<5} tips {} (auto {}, final 60 s {}) | median {} s between tips | {}".format(
+                a["alliance"], a["tips"], a["auto_tips"], a["endgame_tips_final_60s"],
+                a["median_s_between_tips"] or "-", a["notes"] or "-"))
+        for r in robots:
+            if r["red_flags"]:
+                print("    {} red flags: {}".format(r["robot"], r["red_flags"]))
+    except Exception as exc:  # analytics must never break a finished run
+        print("[WARN] Analytics failed: {}".format(exc))
     if debug:
         debug_location = debug_video_path if debug_video_path else (debug_dir or "dashboard stream")
         print("  Debug:  {}".format(debug_location))

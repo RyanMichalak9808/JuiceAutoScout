@@ -320,7 +320,6 @@ class FieldCalibrator:
         M = cv2.moments(carpet)
         cx, cy = M["m10"] / M["m00"], M["m01"] / M["m00"]
         ys = cnt[:, 1]
-        y_top, y_bot = ys.min(), ys.max()
         back_pts = cnt[keep & horiz & (ys < cy)]
         front_pts = cnt[keep & horiz & (ys > cy)]
         left_pts = cnt[keep & ~horiz & (cnt[:, 0] < cx)]

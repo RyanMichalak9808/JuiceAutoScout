@@ -2145,6 +2145,19 @@ function normalizedScrapeWorkers() {
 function toggleGlobalQueue() {
   state.autoQueueEnabled = !state.autoQueueEnabled;
   if (!state.autoQueueEnabled) {
+    // Pause: no new matches start. Matches running now can finish, or be
+    // stopped now and processed again from the start after resuming
+    // (finished matches and approved calibrations are kept on disk, so the
+    // dashboard can be shut down and resumed later).
+    const running = state.jobs.filter((job) => job && job.status === "running");
+    if (running.length && window.confirm(
+      `Pause processing. ${running.length} match(es) are running now.\n\n`
+      + "OK = stop them now (they will be processed again from the start when you resume).\n"
+      + "Cancel = let them finish, then stay paused.")) {
+      running.forEach((job) => {
+        apiPost(`/api/jobs/${job.job_id}/stop`, {}).then(mergeJobIntoState).catch(() => {});
+      });
+    }
     state.autoQueueLastDiscoverAt = 0;
     state.autoQueueCooldownUntil = 0;
     state.autoQueueConsecutive429s = 0;

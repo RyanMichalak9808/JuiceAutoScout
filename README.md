@@ -75,6 +75,8 @@ Then open `http://127.0.0.1:8765/` in a browser.
 
 The dashboard adds:
 
+- pause / resume: the automatic-processing button pauses new matches (optionally stopping running ones). You can shut the dashboard down and start it later: finished matches (`done.json`) and approved calibrations are kept, matches waiting for approval come back, and interrupted matches are processed again from the start
+
 - FTC Events event loading by season plus event code
 - qualification-match overview cards with alliance metadata, scores when available, and per-match status
 - a hardware-aware global queue that can keep starting ready matches automatically

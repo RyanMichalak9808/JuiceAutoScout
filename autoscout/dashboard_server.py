@@ -137,6 +137,83 @@ class DashboardState:
             "ytdlp_extractor_args": "",
             "require_calibration_approval": True,
         }
+        self._restore_saved_jobs()
+
+    # ── pause / resume across restarts ───────────────────────────────────
+    # Each match folder keeps:
+    #   job_payload.json  the request that started it (to rebuild the job)
+    #   running.json      present while a run is in progress (removed when the
+    #                     run ends for any reason except a crash / shutdown)
+    #   done.json         written by auto_scout.py when a match finished
+    #   field_corners.json (approved) / field_corners_auto.json (detected)
+    # A folder counts as processed only with done.json, so a match stopped
+    # or interrupted halfway is processed again from the start.
+
+    @staticmethod
+    def _write_json_file(path: Path, data: Dict[str, object]) -> None:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("w", encoding="utf-8") as handle:
+                json.dump(data, handle, indent=2)
+        except OSError:
+            pass
+
+    @staticmethod
+    def _read_json_file(path: Path) -> Optional[Dict[str, object]]:
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                return json.load(handle)
+        except (OSError, ValueError):
+            return None
+
+    def _approved_corners_path(self, output_dir: Path) -> Optional[Path]:
+        path = output_dir / "field_corners.json"
+        data = self._read_json_file(path) if path.exists() else None
+        if data and data.get("approved") and isinstance(data.get("corners_px"), list):
+            return path
+        return None
+
+    def _restore_saved_jobs(self) -> None:
+        """After a restart, matches that were waiting for calibration approval
+        come back as Needs Approval. Matches with an approved calibration but
+        no done.json are restarted by the auto-queue and reuse it."""
+        output_root = Path(str(self.settings.get("output_root") or "./output_dashboard")).expanduser()
+        if not output_root.is_absolute():
+            output_root = (self.root_dir / output_root).resolve()
+        if not output_root.exists():
+            return
+        restored = 0
+        for payload_path in output_root.glob("*/*/job_payload.json"):
+            match_dir = payload_path.parent
+            if (match_dir / "done.json").exists() or self._approved_corners_path(match_dir):
+                continue
+            calib = self._read_json_file(match_dir / "field_corners_auto.json")
+            payload = self._read_json_file(payload_path)
+            if not calib or not payload:
+                continue
+            (match_dir / "running.json").unlink(missing_ok=True)
+            video = match_dir / "match_video.mp4"
+            job = TrackJob(
+                job_id=uuid.uuid4().hex[:10],
+                command=[],
+                cwd=str(self.root_dir),
+                output_dir=str(match_dir),
+                source_type=str(payload.get("source_type") or "youtube").lower(),
+                source_url=str(payload.get("url")) if payload.get("url") else None,
+                source_video_path=str(video) if video.exists() else payload.get("video_path"),
+                event_code=str(payload.get("event_code")) if payload.get("event_code") else None,
+                match_label=str(payload.get("match_label")) if payload.get("match_label") else None,
+                match_phase=str(payload.get("match_phase")) if payload.get("match_phase") else None,
+                status="awaiting_approval",
+                phase="calibrate",
+                calibration=calib,
+                track_payload=payload,
+            )
+            job.logs.append("[INFO] Restored after a restart: field calibration is waiting for approval.")
+            self.jobs[job.job_id] = job
+            restored += 1
+        if restored:
+            print("[INFO] Restored {} match(es) waiting for calibration approval.".format(restored))
 
     def refresh_hardware(self) -> Dict[str, object]:
         with self.hardware_lock:
@@ -274,6 +351,15 @@ class DashboardState:
 
     def start_track_job(self, payload: Dict[str, object]) -> Dict[str, object]:
         settings = self.get_settings()
+        payload = dict(payload)
+        if not payload.get("corners"):
+            # resuming / reprocessing a match: reuse its approved calibration
+            out_dir = Path(str(payload.get("output_dir") or settings.get("output_root") or "./output")).expanduser()
+            if not out_dir.is_absolute():
+                out_dir = (self.root_dir / out_dir).resolve()
+            approved = self._approved_corners_path(out_dir)
+            if approved is not None:
+                payload["corners"] = str(approved)
         needs_approval = (not payload.get("corners")) and bool(
             payload.get("require_calibration_approval", settings.get("require_calibration_approval", True)))
         if needs_approval:
@@ -290,6 +376,7 @@ class DashboardState:
             event_code=str(payload.get("event_code")) if payload.get("event_code") else None,
             match_label=str(payload.get("match_label")) if payload.get("match_label") else None,
             match_phase=str(payload.get("match_phase")) if payload.get("match_phase") else None,
+            track_payload=dict(payload),
         )
         with self.jobs_lock:
             self.jobs[job.job_id] = job
@@ -514,6 +601,13 @@ class DashboardState:
 
         job.status = "running"
         job.started_at = time.time()
+        out_dir = Path(job.output_dir)
+        (out_dir / "done.json").unlink(missing_ok=True)
+        if job.track_payload is not None:
+            saved_payload = {k: v for k, v in job.track_payload.items() if k != "corners"}
+            self._write_json_file(out_dir / "job_payload.json", saved_payload)
+        self._write_json_file(out_dir / "running.json", {"job_id": job.job_id, "phase": job.phase,
+                                                          "started_at": job.started_at})
         try:
             process = subprocess.Popen(
                 job.command,
@@ -542,6 +636,7 @@ class DashboardState:
         return_code = process.wait()
         job.return_code = return_code
         job.finished_at = time.time()
+        (out_dir / "running.json").unlink(missing_ok=True)
         if job.phase == "calibrate" and not job.stop_requested:
             calib_path = Path(job.output_dir) / "field_corners_auto.json"
             if return_code == 0 and calib_path.exists():
@@ -642,6 +737,11 @@ class DashboardState:
         return output_root / normalized_event_code
 
     def _stored_match_artifact(self, match_dir: Path) -> Optional[Dict[str, object]]:
+        # Only finished matches count. Folders from before done.json existed
+        # (no job_payload.json / running.json) are still accepted.
+        if not (match_dir / "done.json").exists() and (
+                (match_dir / "job_payload.json").exists() or (match_dir / "running.json").exists()):
+            return None
         csv_path = match_dir / "robot_positions.csv"
         jlog_path = match_dir / "robot_positions.jlog"
         wpilog_path = match_dir / "match_log.wpilog"

@@ -5,6 +5,7 @@ import json
 import math
 import os
 import sys
+import time
 from pathlib import Path
 
 from autoscout.geometry import _field_center_to_corner_xy
@@ -677,6 +678,9 @@ def process_match(
     print("  TIPS:   {}".format(tips_path))
     print("  SHOTS:  {}".format(shots_path))
     _print_event_summary(tip_log, shot_log)
+    with open(os.path.join(output_dir, "done.json"), "w") as handle:
+        json.dump({"finished_at": time.time(), "frames_processed": processed,
+                   "video": os.path.abspath(video_path)}, handle, indent=2)
     try:
         alliances, robots = analytics.write_all(cv2, np, output_dir, csv_path, tip_log, shot_log,
                                                 resource_sampler.samples)

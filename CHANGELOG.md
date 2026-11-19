@@ -7,6 +7,7 @@ This file is a running summary of the changes made to AutoScout to adapt it from
 - **New season:** POLLEN (yellow) shots into the red / blue HIVE, HIVE tip counting, and the BIOBUZZ field image.
 - **New camera:** a low, audience-side event stream (640x360, blurry) instead of the high overhead DECODE World Championship broadcast.
 - **Robot labels:** the main problem on the test videos was robot labels swapping or disappearing after collisions and behind the HIVE. Most of the tracker work went there.
+- **Pause / resume:** processing can be paused, the dashboard shut down, and resumed later; finished matches and approved calibrations are kept, and interrupted matches are redone from the start.
 - **Scouting analytics:** per-alliance tip timing (AUTO tips, cycle pace, endgame behavior), per-robot movement red flags, a shot heatmap and a loose game-piece density map, written for every match.
 - **Shots and setup:** the shot detector was rewritten for steep, vertical shots and now follows balls on every frame. Field corners, HIVE boxes and FLOWER boxes are detected automatically for every match, and the dashboard asks for approval of that calibration before tracking starts. Referees and people off the field are filtered out of robot and ball detection.
 - **Original behavior preserved:** every new behavior is behind a switch in `autoscout/season.py`. With the switches set back to their DECODE values, the tracker reproduces the original DECODE output exactly (0 differences over 6,128 rows of `examples/joosmatch.mp4`, rechecked after every round).
@@ -324,6 +325,27 @@ So the current fingerprint stays as it is. Core sampling is kept as a switch, of
 - R0-R3 are tracker labels, not teams.
 - Resource detection is approximate: red / blue items near walls can still be miscounted as NECTAR.
 - Cost: about 20 ms every 2 s for resource sampling plus about 1 s at the end.
+
+### 9. Pause and resume processing across shutdowns (ninth commit)
+
+**What:** match processing can be paused, the dashboard and computer shut down, and processing resumed later without losing finished work or approvals. Resuming happens per match: a match interrupted halfway is processed again from the start (about 90 s), because saving the full tracker state mid-match would be large and fragile.
+
+**How:**
+- **Pause:** the overview's automatic-processing button now pauses as well as starts. Pausing stops new matches from starting. If matches are running, it asks whether to stop them now (they're redone from the start after resuming) or let them finish.
+- **Markers in each match folder:**
+  - `job_payload.json`: the request that started the match;
+  - `running.json`: present while a run is in progress;
+  - `done.json`: written by `auto_scout.py` only when a match finishes.
+- **Processed status:** a match counts as processed only with `done.json`. Before, a half-written `robot_positions.csv` could make an interrupted match look processed. Older folders without these markers are still accepted.
+- **Restart:** matches that were waiting for calibration approval come back as **Needs Approval**.
+- **Resume:** a match with an approved `field_corners.json` but no `done.json` is restarted by the auto-queue and reuses that calibration without asking again. A downloaded video is kept until its match finishes, so it isn't downloaded again.
+
+**Checked end to end against the server:**
+- a match waiting for approval was restored after a restart;
+- after approval, a run stopped halfway was not counted as processed;
+- after another restart, starting it again reused the approved calibration (no approval prompt) and ran to completion, and only then counted as processed.
+
+**Note:** "Reprocess Match" also reuses the approved calibration. To recalibrate a match, delete its `field_corners.json` first.
 
 ## Results on the example videos
 

@@ -544,6 +544,42 @@ Cleanup deleted only the ticked stream audio and finished-match video (48 MB), a
 - **The failing message:** printed under a simulated Windows console (`PYTHONIOENCODING=cp1252`), it now prints `R1?R2` and the run continues.
 - **Full run:** examples/piper_q9.mp4 under the same simulated console finished normally with all outputs. The swap message that crashed Q4 came up many times and printed cleanly as `swaps: R0<-R1, R1<-R0`.
 
+### 19. Settings tab switches for tracking and stream splitting (nineteenth commit)
+
+**Why:** robot tracking ran on every source frame even though the log said "Processing every 1 frames". That wasn't a stale log message: `PROCESS_EVERY_SOURCE_FRAME = True` in auto_scout.py (from the original repo) overrides `--sample-rate`. The rule from now on: any switch meant to be tunable gets a control in the Settings tab.
+
+**New in Settings:**
+- **Tracking:**
+  - **Track robots on every video frame:** on by default, same as before. When off, robots are tracked at the rate below. Balls and touching robots are still followed every frame either way.
+  - **Tracking rate:** 10 frames per second by default.
+  - **Only process the field area:** the processing window from section 10, on by default.
+- **Full stream splitting:**
+  - **Clip lead-in before AUTO:** 16 s.
+  - **Clip tail after the match:** 10 s.
+
+**How:**
+- **Command line:** new flags `--every-frame` / `--no-every-frame` and `--no-roi` in auto_scout.py. Jobs started from the dashboard get them from the settings, along with `--sample-rate`. The stream splitter takes the clip margins from the settings.
+- **Saved settings:** settings are now written to `dashboard_settings.json` (git-ignored) and loaded again when the dashboard starts. Before, they were lost on every restart.
+
+**Measured** on the Piper examples (30 fps), every frame vs 10 per second:
+
+| Clip | Run time | Tips | Shots made / missed |
+|---|---|---|---|
+| Q9 | 58 s vs 41 s | same 7 tips, times within 0.9 s | 42/36 in both |
+| Q11 | 52 s vs 36 s | same 6 tips, times within 0.5 s | 17/15 in both |
+
+- **Run time:** about 30% faster at 10 per second. On a 60 fps stream the saving is larger, because every frame then means 6 times as much robot tracking.
+- **Robot positions** (ignoring labels): median difference 0 in.
+- **Robot labels:** after robots touched, the two modes sometimes relabeled them differently.
+  - every frame: 6 and 4 relabels;
+  - 10 per second: 2 and 2.
+  - Which is right needs checking by eye against the video, so the default stays every frame (no change in results) until that's done.
+
+**Checked** in the browser:
+- changed the settings and saved;
+- restarted the server, and the saved values came back;
+- a job command built afterwards had `--sample-rate 12 --no-every-frame --no-roi`.
+
 ## Results on the example videos
 
 | | Original / first version | Now |

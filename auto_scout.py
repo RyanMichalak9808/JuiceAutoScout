@@ -120,6 +120,7 @@ def process_match(
     output_dir,
     start_offset_sec=0.0,
     sample_rate_fps=10.0,
+    process_every_frame=None,
     debug=False,
     debug_video=False,
     debug_every_n=1,
@@ -191,7 +192,7 @@ def process_match(
         ))
 
     frame_step = max(1, int(round(video_fps / sample_rate_fps)))
-    if PROCESS_EVERY_SOURCE_FRAME:
+    if PROCESS_EVERY_SOURCE_FRAME if process_every_frame is None else process_every_frame:
         frame_step = 1
     print("[INFO] Processing every {} frames (~{:.1f} fps output)".format(
         frame_step, video_fps / frame_step))
@@ -981,6 +982,12 @@ def main():
                         help="Auto-detect match start/end from the broadcast timer")
     parser.add_argument("--sample-rate", type=float, default=10.0,
                         help="Frames per second to process (default 10)")
+    parser.add_argument("--every-frame", dest="every_frame", action="store_true", default=None,
+                        help="Track robots on every source frame (ignores --sample-rate; slower)")
+    parser.add_argument("--no-every-frame", dest="every_frame", action="store_false",
+                        help="Track robots at --sample-rate (balls and merges are still followed every frame)")
+    parser.add_argument("--no-roi", action="store_true",
+                        help="Process the whole frame instead of a window around the field")
     parser.add_argument("--debug", action="store_true",
                         help="Save annotated debug frames to tracker_debug/")
     parser.add_argument("--debug-video", action="store_true",
@@ -1061,11 +1068,14 @@ def main():
             robot_init = json.loads(raw)
         print("[INFO] Robot init positions:", robot_init)
 
+    if args.no_roi:
+        season.PROCESS_ROI = False
     process_match(
         video_path=video_path,
         output_dir=args.output_dir,
         start_offset_sec=args.start_offset,
         sample_rate_fps=args.sample_rate,
+        process_every_frame=args.every_frame,
         debug=(args.debug or args.debug_video),
         debug_video=args.debug_video,
         debug_every_n=args.debug_every,

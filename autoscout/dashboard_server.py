@@ -140,7 +140,14 @@ class DashboardState:
             "ytdlp_cookies_path": "",
             "ytdlp_extractor_args": "",
             "require_calibration_approval": True,
+            # tracking / splitting switches (Settings tab)
+            "track_every_frame": True,
+            "tracking_sample_rate": 10.0,
+            "crop_to_field": True,
+            "stream_clip_lead_s": stream_split.CLIP_PRE_S,
+            "stream_clip_tail_s": stream_split.CLIP_POST_S,
         }
+        self._load_saved_settings()
         self._restore_saved_jobs()
 
     # ── pause / resume across restarts ───────────────────────────────────
@@ -297,8 +304,11 @@ class DashboardState:
                         raise RuntimeError("yt-dlp is not installed.")
                     raw_attempts, _notes = build_download_attempts([self.root_dir])
                     attempts = [a["args"] for a in raw_attempts]
+                settings = self.get_settings()
                 status["result"] = stream_split.split_stream(
                     source, schedule, self._event_output_root(event_code),
+                    clip_pre_s=float(settings.get("stream_clip_lead_s") or stream_split.CLIP_PRE_S),
+                    clip_post_s=float(settings.get("stream_clip_tail_s") or stream_split.CLIP_POST_S),
                     yt_dlp_cmd=yt_cmd, yt_dlp_attempts=attempts, log=log, progress=progress,
                     on_clip=on_clip)
                 status["status"] = "done"
@@ -403,13 +413,32 @@ class DashboardState:
         with self.settings_lock:
             return dict(self.settings)
 
+    def _settings_path(self) -> Path:
+        return self.root_dir / "dashboard_settings.json"
+
+    def _load_saved_settings(self) -> None:
+        """Settings saved from the Settings tab survive a dashboard restart."""
+        try:
+            with self._settings_path().open("r", encoding="utf-8") as handle:
+                saved = json.load(handle)
+        except (OSError, ValueError):
+            return
+        for key, value in saved.items():
+            if key in self.settings:
+                self.settings[key] = value
+
     def update_settings(self, updates: Dict[str, object]) -> Dict[str, object]:
         allowed_keys = set(self.settings.keys())
         with self.settings_lock:
             for key, value in updates.items():
                 if key in allowed_keys:
                     self.settings[key] = value
-            return dict(self.settings)
+            snapshot = dict(self.settings)
+        try:
+            self._write_json_file(self._settings_path(), snapshot)
+        except OSError:
+            pass
+        return snapshot
 
     def list_examples(self) -> Dict[str, object]:
         examples_dir = self.root_dir / "examples"
@@ -675,8 +704,13 @@ class DashboardState:
             command.extend(["--start-offset", str(start_offset)])
 
         sample_rate = payload.get("sample_rate")
+        if sample_rate in (None, ""):
+            sample_rate = settings.get("tracking_sample_rate")
         if sample_rate not in (None, ""):
             command.extend(["--sample-rate", str(sample_rate)])
+        command.append("--every-frame" if settings.get("track_every_frame", True) else "--no-every-frame")
+        if not settings.get("crop_to_field", True):
+            command.append("--no-roi")
 
         debug_every = payload.get("debug_every")
         if debug_every in (None, ""):

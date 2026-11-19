@@ -94,7 +94,9 @@ If an event only has one long stream, paste its YouTube link into **Full stream 
 | -------- | -------- | -------- | -------- |
 | `--output-dir` | `string` | `./output` | Directory for CSV, JLOG, WPILOG, background image, and debug frames |
 | `--start-offset` | `float` | `0.0` | Seconds to skip before the match timer starts |
-| `--sample-rate` | `float` | `10.0` | Effective frames per second to process |
+| `--sample-rate` | `float` | `10.0` | Frames per second to track robots at (only used with `--no-every-frame`) |
+| `--every-frame` / `--no-every-frame` | - | every frame | Track robots on every source frame, or at `--sample-rate`. Balls and touching robots are always followed every frame. Dashboard: Settings, Tracking |
+| `--no-roi` | - | disabled | Process the whole frame instead of a window around the field. Dashboard: Settings, Tracking |
 | `--debug` | - | disabled | Save annotated debug frames to `tracker_debug/` |
 | `--debug-video` | - | disabled | Write annotated debug output to `tracker_debug.mp4` instead of `tracker_debug/` images. Implies `--debug` |
 | `--debug-every` | `int` | `1` | Save one debug frame every `N` processed frames |

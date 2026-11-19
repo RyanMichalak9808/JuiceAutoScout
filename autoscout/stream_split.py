@@ -251,7 +251,8 @@ def split_stream(source: str, schedule: List[Dict[str, object]], out_root: Path,
                  yt_dlp_cmd: Optional[List[str]] = None, yt_dlp_attempts: Optional[List[List[str]]] = None,
                  log: Callable[[str], None] = print, cut: bool = True,
                  progress: Callable[[float], None] = lambda pct: None,
-                 on_clip: Callable[[Dict[str, object]], None] = lambda match: None) -> Dict[str, object]:
+                 on_clip: Callable[[Dict[str, object]], None] = lambda match: None,
+                 clip_pre_s: float = CLIP_PRE_S, clip_post_s: float = CLIP_POST_S) -> Dict[str, object]:
     """source: local video/audio file or a YouTube URL. Writes
     out_root/<slug(label)>/match_video.mp4 + stream_clip.json and
     out_root/stream_split.json. Returns the summary."""
@@ -318,8 +319,8 @@ def split_stream(source: str, schedule: List[Dict[str, object]], out_root: Path,
             continue
         clip_dir = out_root / slugify(d["label"])
         clip = clip_dir / "match_video.mp4"
-        a = max(0.0, float(d["start_s"]) - CLIP_PRE_S)
-        b = float(d["end_s"]) + CLIP_POST_S
+        a = max(0.0, float(d["start_s"]) - clip_pre_s)
+        b = float(d["end_s"]) + clip_post_s
         d["clip_path"] = str(clip)
         if not cut:
             d["status"] = "detected"

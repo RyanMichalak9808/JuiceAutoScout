@@ -159,6 +159,11 @@ function bindDom() {
   dom.settingDebugFrames = document.getElementById("settingDebugFrames");
   dom.settingDebugVideo = document.getElementById("settingDebugVideo");
   dom.settingAutoOpen = document.getElementById("settingAutoOpen");
+  dom.settingTrackEveryFrame = document.getElementById("settingTrackEveryFrame");
+  dom.settingTrackingRate = document.getElementById("settingTrackingRate");
+  dom.settingCropToField = document.getElementById("settingCropToField");
+  dom.settingClipLead = document.getElementById("settingClipLead");
+  dom.settingClipTail = document.getElementById("settingClipTail");
   dom.settingsStatus = document.getElementById("settingsStatus");
   dom.settingsHardware = document.getElementById("settingsHardware");
 }
@@ -1574,6 +1579,11 @@ function renderSettings() {
   dom.settingDebugFrames.checked = Boolean(settings.default_debug_frames);
   dom.settingDebugVideo.checked = Boolean(settings.default_debug_video);
   dom.settingAutoOpen.checked = Boolean(settings.auto_open_process_view);
+  dom.settingTrackEveryFrame.checked = settings.track_every_frame !== false;
+  dom.settingTrackingRate.value = settings.tracking_sample_rate ?? 10;
+  dom.settingCropToField.checked = settings.crop_to_field !== false;
+  dom.settingClipLead.value = settings.stream_clip_lead_s ?? 16;
+  dom.settingClipTail.value = settings.stream_clip_tail_s ?? 10;
 }
 
 function renderSettingsHardware() {
@@ -1603,6 +1613,11 @@ async function saveSettings(event) {
       default_debug_frames: dom.settingDebugFrames.checked,
       default_debug_video: dom.settingDebugVideo.checked,
       auto_open_process_view: dom.settingAutoOpen.checked,
+      track_every_frame: dom.settingTrackEveryFrame.checked,
+      tracking_sample_rate: Number(dom.settingTrackingRate.value || 10),
+      crop_to_field: dom.settingCropToField.checked,
+      stream_clip_lead_s: Number(dom.settingClipLead.value || 16),
+      stream_clip_tail_s: Number(dom.settingClipTail.value || 10),
     });
     dom.settingsStatus.textContent = "Settings saved.";
   } catch (error) {

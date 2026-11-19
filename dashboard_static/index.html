@@ -388,6 +388,28 @@
                 <input id="settingAutoOpen" type="checkbox">
                 Auto-open process view after starting a job
               </label>
+              <div class="section-title wide settings-group">Tracking</div>
+              <label class="checkbox wide">
+                <input id="settingTrackEveryFrame" type="checkbox">
+                Track robots on every video frame (slower; off = track at the rate below; balls and touching robots are always followed every frame)
+              </label>
+              <label>
+                Tracking rate (frames per second, when not every frame)
+                <input id="settingTrackingRate" type="number" min="1" max="60" step="1" value="10">
+              </label>
+              <label class="checkbox">
+                <input id="settingCropToField" type="checkbox">
+                Only process the field area (faster; the output video still shows the whole frame)
+              </label>
+              <div class="section-title wide settings-group">Full stream splitting</div>
+              <label>
+                Clip lead-in before AUTO (seconds)
+                <input id="settingClipLead" type="number" min="0" max="120" step="1" value="16">
+              </label>
+              <label>
+                Clip tail after the match (seconds)
+                <input id="settingClipTail" type="number" min="0" max="120" step="1" value="10">
+              </label>
               <div class="inline-actions">
                 <button type="submit" class="primary">Save Settings</button>
               </div>

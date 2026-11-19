@@ -90,6 +90,7 @@ class TrackJob:
     # then the job waits in "awaiting_approval" until the user approves or
     # edits the calibration in the dashboard.
     phase: str = "track"
+    calibrate_seconds: Optional[float] = None   # time the calibration run took
     calibration: Optional[Dict[str, object]] = None
     track_payload: Optional[Dict[str, object]] = None
 
@@ -851,6 +852,8 @@ class DashboardState:
                 job.calibration = {"corners_px": [], "auto": {"confidence": "failed",
                                    "method": "automatic calibration failed - place the corners by hand"}}
             job.status = "awaiting_approval"
+            job.calibrate_seconds = time.time() - (job.started_at or time.time())
+            job.logs.append("[INFO] Field calibration took {}.".format(_format_duration(job.calibrate_seconds)))
             job.logs.append("[INFO] Field calibration ready - approve or adjust it in the dashboard to start tracking.")
             return
         if job.stop_requested and return_code != 0:
@@ -860,7 +863,16 @@ class DashboardState:
             job.status = "completed" if return_code == 0 else "failed"
             if job.status == "failed":
                 self._fail_in_progress_stages(job, "Failed")
-        job.logs.append("[DONE] Job finished with code {}".format(return_code))
+        run_seconds = time.time() - (job.started_at or time.time())
+        if job.status == "completed":
+            if job.calibrate_seconds is not None:
+                job.logs.append("[DONE] Match processed in {} (calibration {} + tracking {}; "
+                                "time waiting for approval not counted).".format(
+                                    _format_duration(job.calibrate_seconds + run_seconds),
+                                    _format_duration(job.calibrate_seconds), _format_duration(run_seconds)))
+            else:
+                job.logs.append("[DONE] Match processed in {}.".format(_format_duration(run_seconds)))
+        job.logs.append("[DONE] Job finished with code {} after {}".format(return_code, _format_duration(run_seconds)))
         if job.status == "completed":
             self._delete_downloaded_video(Path(job.output_dir), job.logs)
 
@@ -1383,6 +1395,13 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             self.wfile.write(raw)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
+
+
+def _format_duration(seconds: float) -> str:
+    seconds = max(0, int(round(seconds or 0)))
+    if seconds < 60:
+        return "{}s".format(seconds)
+    return "{}m {:02d}s ({}s)".format(seconds // 60, seconds % 60, seconds)
 
 
 def run_dashboard_server(host: str = "127.0.0.1", port: int = 8765) -> None:

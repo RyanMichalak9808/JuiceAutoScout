@@ -594,6 +594,15 @@ Cleanup deleted only the ticked stream audio and finished-match video (48 MB), a
 - `"done": false` is still refused;
 - `"done": true` is accepted.
 
+### 21. Processing time per match in the job log (twenty-first commit)
+
+**What:** every match's job log now says how long it took.
+- **After field calibration:** `[INFO] Field calibration took 3s.`
+- **When the match finishes:** `[DONE] Match processed in 1m 05s (65s) (calibration 3s + tracking 1m 02s (62s); time waiting for approval not counted).` Downloading a match video happens in the calibration run, so it is included in the calibration time.
+- **Every finished run:** `[DONE] Job finished with code 0 after 1m 02s (62s)`, including failed or stopped runs.
+
+**Checked:** a real job on examples/piper_q11.mp4 through the dashboard (calibrate, approve via the API, track). It logged 3 s calibration + 62 s tracking = 65 s, and the 3 s spent waiting before approval was not counted.
+
 ## Results on the example videos
 
 | | Original / first version | Now |

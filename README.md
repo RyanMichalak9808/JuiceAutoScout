@@ -87,7 +87,7 @@ The dashboard adds:
 
 ### Full event streams
 
-If an event only has one long stream, load the event, paste the stream (YouTube link or local video path) into **Full Stream** on the Overview page and press **Split Stream**. The field buzzers in the audio are used to find every match, the matches are labeled from the FTC Events schedule, and a clip with the exact AUTO start is cut for each one. The matches can then be processed like any other.
+If an event only has one long stream, paste its YouTube link into **Full stream YouTube link (optional)** on the Load Event screen; the stream is split as soon as the event loads. (A local video path works too, and the split can be started later from **Full Stream** on the Overview page.) The field buzzers in the audio are used to find every match, the matches are labeled from the FTC Events schedule, and a clip with the exact AUTO start is cut for each one. The matches can then be processed like any other.
 
 ## CLI Flags
 | Flag | Type | Default | Description |

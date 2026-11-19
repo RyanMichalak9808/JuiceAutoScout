@@ -92,6 +92,7 @@ function bindDom() {
   dom.eventForm = document.getElementById("eventForm");
   dom.seasonInput = document.getElementById("seasonInput");
   dom.eventCodeInput = document.getElementById("eventCodeInput");
+  dom.setupStreamInput = document.getElementById("setupStreamInput");
   dom.resolvedUrlInput = document.getElementById("resolvedUrlInput");
   dom.loadEventButton = document.getElementById("loadEventButton");
   dom.loadEventButtonLabel = document.getElementById("loadEventButtonLabel");
@@ -351,6 +352,12 @@ async function handleEventLoad(event) {
     });
     showEventWorkspace(payload, true);
     dom.selectStatus.textContent = "Event loaded.";
+    const streamLink = dom.setupStreamInput.value.trim();
+    if (streamLink) {
+      // one long stream: cut it into matches right away
+      dom.streamSourceInput.value = streamLink;
+      splitEventStream();
+    }
   } catch (error) {
     dom.selectStatus.textContent = error.message;
   } finally {

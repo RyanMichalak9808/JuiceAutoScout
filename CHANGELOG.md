@@ -402,7 +402,7 @@ On these cameras the field fills most of the picture (the window is 86-90% of th
 
 **Why:** many events only post one long stream instead of a video per match, so the dashboard had nothing to process even though the FTC Events results and team stats loaded fine.
 
-**What:** a **Full Stream** box on the Overview page. Paste the event's stream (a YouTube link or a video file on this computer) and press **Split Stream**. Every qualification match is found, labeled and cut into its own clip, and those matches can then be processed and queued like any other.
+**What:** an optional **Full stream YouTube link** field on the Load Event screen, right below the FTC Events URL. If it's filled in, the stream is split as soon as the event loads. The same split can also be started later from the **Full Stream** box on the Overview page. Paste the event's stream (a YouTube link or a video file on this computer) and press **Split Stream**. Every qualification match is found, labeled and cut into its own clip, and those matches can then be processed and queued like any other.
 
 **How it works** (`autoscout/stream_split.py`; kept light, since it mostly works from the audio):
 1. **Audio only first.** For a YouTube link, only the audio is downloaded (smallest format, about 20 MB per hour). It is decoded at 8 kHz mono in parallel chunks across the CPU cores.
@@ -427,6 +427,7 @@ On these cameras the field fills most of the picture (the window is 86-90% of th
 - **Speed:**
   - audio step (decode, detect, label): about 11 s for the whole stream; decoding was 29 s before the parallel decode;
   - full split including cutting all 18 clips from a local file: 33 s.
+- **Load Event screen (browser):** stream field filled in, Load Event pressed. The split started by itself, all 18 matches were labeled and queueable, with no page errors.
 - **End to end in the dashboard:** load the event live from FTC Events, split, reload, queue Q9. It ran field calibration on the clip with `--start-offset 9.45` and no download, and reached "awaiting approval" with high confidence.
 
 **Not tested here:** the YouTube download path, because YouTube blocks downloads from this build environment. It uses the same yt-dlp attempts (and cookies) as the normal match download.

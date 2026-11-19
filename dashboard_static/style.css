@@ -1149,3 +1149,13 @@ label {
   height: auto;
   display: block;
 }
+
+.analytics-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.analytics-table th, .analytics-table td { padding: 6px 8px; text-align: right; border-bottom: 1px solid rgba(255,255,255,0.08); }
+.analytics-table th:nth-child(2), .analytics-table td:nth-child(2) { text-align: left; }
+.analytics-table .active-col { color: #fe8f00; font-weight: 600; }
+.analytics-chart { width: 100%; height: auto; }
+.analytics-chart .axis { stroke: rgba(255,255,255,0.4); }
+.analytics-chart .pt { fill: #fe8f00; }
+.analytics-chart .lbl { fill: rgba(255,255,255,0.75); font-size: 10px; }
+.analytics-chart .axl { fill: rgba(255,255,255,0.6); font-size: 12px; text-anchor: middle; }

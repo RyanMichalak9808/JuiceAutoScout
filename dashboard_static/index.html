@@ -23,6 +23,7 @@
         <button type="button" class="nav-btn" data-route="overview">Overview</button>
         <button type="button" class="nav-btn" data-route="calibration">Calibration</button>
         <button type="button" class="nav-btn" data-route="settings">Settings</button>
+        <button type="button" class="nav-btn" data-route="analytics">Analytics</button>
       </nav>
 
       <div class="topbar-status">
@@ -286,6 +287,37 @@
                 <a class="tool-link" href="/tools/manual_tracker.html" target="_blank" rel="noreferrer">Open manual tracker in a new tab</a>
               </div>
             </div>
+          </article>
+        </div>
+      </section>
+
+      <section id="analyticsView" class="view">
+        <div class="dashboard-grid">
+          <article class="panel panel-wide">
+            <div class="panel-head">
+              <div>
+                <div class="section-title">Analytics</div>
+                <h2>Team stats from FTC Events results</h2>
+              </div>
+              <div class="inline-actions">
+                <label>Rank by
+                  <select id="analyticsRankSelect">
+                    <option value="EPA">EPA</option>
+                    <option value="OPR">OPR</option>
+                    <option value="RSI">RSI</option>
+                    <option value="oprSOS">oprSOS (bigger is harder)</option>
+                    <option value="epaSOS">epaSOS (lower is harder)</option>
+                    <option value="win_pct">Win%</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+            <p class="helper-copy" id="analyticsInfo">Load an event to compute team stats.</p>
+            <div id="analyticsTable"></div>
+          </article>
+          <article class="panel panel-wide">
+            <div class="panel-head"><div><div class="section-title">Chart</div><h2>OPR vs Win%</h2></div></div>
+            <div id="analyticsChart"></div>
           </article>
         </div>
       </section>

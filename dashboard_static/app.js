@@ -1,4 +1,4 @@
-const ROUTES = ["overview", "process", "calibration", "settings"];
+const ROUTES = ["overview", "process", "calibration", "settings", "analytics"];
 const STORAGE_KEY = "juice_dashboard_event_v2";
 const AUTO_QUEUE_DISCOVERY_INTERVAL_MS = 45000;
 const AUTO_QUEUE_RATE_LIMIT_RESET_MS = 30 * 60 * 1000;
@@ -84,6 +84,11 @@ function bindDom() {
   dom.processView = document.getElementById("processView");
   dom.calibrationView = document.getElementById("calibrationView");
   dom.settingsView = document.getElementById("settingsView");
+  dom.analyticsView = document.getElementById("analyticsView");
+  dom.analyticsRankSelect = document.getElementById("analyticsRankSelect");
+  dom.analyticsInfo = document.getElementById("analyticsInfo");
+  dom.analyticsTable = document.getElementById("analyticsTable");
+  dom.analyticsChart = document.getElementById("analyticsChart");
   dom.eventForm = document.getElementById("eventForm");
   dom.seasonInput = document.getElementById("seasonInput");
   dom.eventCodeInput = document.getElementById("eventCodeInput");
@@ -166,6 +171,7 @@ function bindEvents() {
   dom.frameSliderInput.addEventListener("input", handleFrameScrubPreview);
   dom.downloadCornersButton.addEventListener("click", downloadCornersJson);
   dom.saveCornersButton.addEventListener("click", saveCornersInRepo);
+  dom.analyticsRankSelect.addEventListener("change", renderAnalytics);
   dom.calibModeButtons.forEach((button) => {
     button.addEventListener("click", () => setCalibrationMode(button.dataset.calibMode));
   });
@@ -370,6 +376,7 @@ function showEventWorkspace(eventPayload, persist = true) {
   renderOverview();
   renderCalibrationSources();
   renderProgressNudge();
+  renderAnalytics();
   const targetRoute = state.route === "process" ? "process" : "overview";
   setRoute(targetRoute);
 }
@@ -473,6 +480,7 @@ function renderRoute() {
     process: dom.processView,
     calibration: dom.calibrationView,
     settings: dom.settingsView,
+    analytics: dom.analyticsView,
   };
   Object.values(views).forEach((view) => view.classList.remove("active"));
   if (!state.currentEvent || state.route === "select") {
@@ -497,6 +505,8 @@ function renderRoute() {
     renderProcessView();
   } else if (state.route === "calibration") {
     renderCalibrationSources();
+  } else if (state.route === "analytics") {
+    renderAnalytics();
   } else if (state.route === "settings") {
     renderSettings();
     renderSettingsHardware();
@@ -848,6 +858,43 @@ async function approveCurrentCalibration() {
   } finally {
     dom.approvalApproveButton.disabled = false;
   }
+}
+
+function renderAnalytics() {
+  if (!dom.analyticsTable) {
+    return;
+  }
+  const analytics = state.currentEvent?.analytics;
+  const teams = analytics?.teams || [];
+  if (!teams.length) {
+    dom.analyticsInfo.textContent = analytics?.note
+      || "No team stats yet - reload the event from the event picker to compute them.";
+    dom.analyticsTable.innerHTML = "";
+    dom.analyticsChart.innerHTML = "";
+    return;
+  }
+  const stat = dom.analyticsRankSelect.value || "EPA";
+  const ascending = stat === "epaSOS";   // lower epaSOS = harder schedule
+  const rows = [...teams].sort((a, b) => (ascending ? a[stat] - b[stat] : b[stat] - a[stat]));
+  dom.analyticsInfo.textContent = `${analytics.matches_used} played qualification matches from FTC Events, ${teams.length} teams. Ranked by ${stat}. Recomputed every time the event is loaded.`;
+  const cols = [["EPA", "EPA"], ["OPR", "OPR"], ["RSI", "RSI"], ["oprSOS", "oprSOS"], ["epaSOS", "epaSOS"], ["record", "Record"], ["win_pct", "Win%"]];
+  const head = `<tr><th>#</th><th>Team</th>${cols.map(([k, l]) => `<th${k === stat ? ' class="active-col"' : ""}>${l}</th>`).join("")}</tr>`;
+  const body = rows.map((r, i) => `<tr><td>${i + 1}</td><td>${r.team}</td>${cols.map(([k]) => {
+    const v = k === "win_pct" ? `${Math.round(r[k] * 100)}%` : r[k];
+    return `<td${k === stat ? ' class="active-col"' : ""}>${v}</td>`;
+  }).join("")}</tr>`).join("");
+  dom.analyticsTable.innerHTML = `<table class="analytics-table">${head}${body}</table>`;
+  // OPR vs Win% scatter (inline SVG)
+  const W = 720, H = 420, P = 44;
+  const oprs = teams.map((t) => t.OPR);
+  const lo = Math.min(...oprs), hi = Math.max(...oprs);
+  const sx = (v) => P + ((v - lo) / Math.max(hi - lo, 1e-6)) * (W - 2 * P);
+  const sy = (v) => H - P - v * (H - 2 * P);
+  const pts = teams.map((t) => `<circle cx="${sx(t.OPR).toFixed(1)}" cy="${sy(t.win_pct).toFixed(1)}" r="4" class="pt"><title>${t.team}: OPR ${t.OPR}, Win% ${Math.round(t.win_pct * 100)}%</title></circle><text x="${(sx(t.OPR) + 6).toFixed(1)}" y="${(sy(t.win_pct) - 6).toFixed(1)}" class="lbl">${t.team}</text>`).join("");
+  dom.analyticsChart.innerHTML = `<svg viewBox="0 0 ${W} ${H}" class="analytics-chart">
+    <line x1="${P}" y1="${H - P}" x2="${W - P}" y2="${H - P}" class="axis"/><line x1="${P}" y1="${P}" x2="${P}" y2="${H - P}" class="axis"/>
+    <text x="${W / 2}" y="${H - 8}" class="axl">OPR (${lo.toFixed(0)} to ${hi.toFixed(0)})</text>
+    <text x="${P}" y="${P - 14}" class="axl" style="text-anchor:start">Win% (0-100)</text>${pts}</svg>`;
 }
 
 function statCard(label, value) {

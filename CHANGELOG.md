@@ -25,7 +25,7 @@ Measured with `git diff 4d1be90 HEAD`. Example videos and images are excluded.
 | `autoscout/shot.py` | 470 | 536 | +14% (most of the logic rewritten) |
 | `auto_scout.py` | 809 | 1,061 | +31% |
 | `autoscout/dashboard_server.py` | 950 | 1,132 | +19% |
-| New files | | | `autoscout/season.py`, `autoscout/analytics.py`, `autoscout/field_detect.py`, `autoscout/hive.py`, `autoscout/match_start.py`, `dashboard_static/calib_editor.js`, `tools/find_match_start.py`, `assets/biobuzz-field.png`, `CHANGELOG.md`, three example videos and their calibrations |
+| New files | | | `autoscout/season.py`, `autoscout/analytics.py`, `autoscout/scouting_stats.py`, `autoscout/field_detect.py`, `autoscout/hive.py`, `autoscout/match_start.py`, `dashboard_static/calib_editor.js`, `tools/find_match_start.py`, `assets/biobuzz-field.png`, `CHANGELOG.md`, three example videos and their calibrations |
 
 Most of the work is added code behind switches; apart from the shot detector, little original code was rewritten.
 
@@ -374,6 +374,29 @@ On these cameras the field fills most of the picture (the window is 86-90% of th
 - **A bug found and fixed while checking:** the first version of the small masks padded robots touching the bottom of the picture with a blank border, which changed their centers slightly. The masks are now clipped at the picture edge, which brought Shanghai back to exactly the previous output.
 
 **Processing cost vs the original repo now:** q9 59.0 s originally vs 54.8 s now, so the full BIOBUZZ version with every-frame shot tracking is now about 7% *faster* than the original DECODE code.
+
+### 11. Analytics tab: team stats from FTC Events (eleventh commit)
+
+**What:** a new **Analytics** tab in the dashboard (Overview, Calibration, Settings, Analytics). Every time an event is pulled from FTC Events, the team's scouting calculator (`scoutingcalculatorfixed - 5-3-26.py`) runs on the played qualification matches, and the results are shown there.
+
+**How:**
+- **`autoscout/scouting_stats.py`** is a port of the calculator's math:
+  - OPR: least squares on alliance scores;
+  - EPA: ridge regression on score margins, lambda 10;
+  - RSI: OPR as a z-score;
+  - oprSOS and epaSOS: mean OPR / EPA of the opponents faced;
+  - Record and Win%.
+- **Removed:** DPR and CCWM, as requested.
+- **Input:** instead of pasted text, it reads the match results (teams and scores) that event loading already pulls from FTC Events. Matches without scores yet are skipped.
+- **When it runs:** the server runs it as part of `POST /api/event/discover` and returns `analytics` with the event, so it is recomputed every time the event is loaded.
+- **The tab:** a table of all teams with a rank-by selector (EPA, OPR, RSI, oprSOS, epaSOS, Win%; epaSOS ranks lowest first, since lower means a harder schedule), plus an OPR vs Win% scatter chart with team labels.
+
+**Checked:**
+- **Same results as the original script:** the same 30 random matches went through both, and EPA, OPR, RSI, oprSOS, epaSOS, Record and Win% matched for all 14 teams (to the script's 2-decimal output).
+- **Browser:** the tab was tested with that event loaded: ranking, re-sorting and the chart worked with no page errors.
+- **Not tested live:** this build environment can't reach ftc-events.firstinspires.org, so a live event pull wasn't run here. It uses the same results the dashboard already scrapes.
+
+**Note:** the stats are only as good as the scraped scores. A match whose scores can't be read from the FTC Events page is left out.
 
 ## Results on the example videos
 

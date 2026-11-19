@@ -19,6 +19,7 @@ from typing import Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
 from autoscout.ftc_events import discover_event_videos
+from autoscout.scouting_stats import compute_team_stats
 from autoscout.hardware import collect_hardware_profile, collect_runtime_usage
 from autoscout.ytdlp import (
     auth_help_message,
@@ -971,6 +972,12 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                     event_url=event_url,
                     io_workers=int(io_workers),
                 )
+                # run the scouting calculator on the pulled results
+                try:
+                    result["analytics"] = compute_team_stats(result.get("matches") or [])
+                except Exception as exc:  # stats must never break event loading
+                    result["analytics"] = {"teams": [], "matches_used": 0,
+                                           "note": "Team stats failed: {}".format(exc)}
                 self._write_json(result)
                 return
 

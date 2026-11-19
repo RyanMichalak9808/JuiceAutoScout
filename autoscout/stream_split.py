@@ -238,9 +238,15 @@ def read_clip_info(clip_dir: Path) -> Optional[Dict[str, object]]:
             info = json.load(fh)
     except (OSError, ValueError):
         return None
-    if info.get("done") is not True or not (Path(clip_dir) / "match_video.mp4").exists():
+    if not (Path(clip_dir) / "match_video.mp4").exists():
         return None
-    return info
+    if info.get("done") is True:
+        return info
+    # Clips split by an older version have no "done" field. Those wrote
+    # stream_clip.json only after the clip was complete, so they are finished.
+    if "done" not in info and info.get("status") == "clip_ready":
+        return info
+    return None
 
 
 def slugify(text: str) -> str:

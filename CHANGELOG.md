@@ -580,6 +580,20 @@ Cleanup deleted only the ticked stream audio and finished-match video (48 MB), a
 - restarted the server, and the saved values came back;
 - a job command built afterwards had `--sample-rate 12 --no-every-frame --no-roi`.
 
+### 20. Fix: clips split by an older version were treated as "still downloading" (twentieth commit)
+
+**Bug:** clips cut by an older version (e.g. 76fc75b) have no `"done"` field in `stream_clip.json`. The check from section 17 treated them as still downloading, so starting them failed with "This match's stream clip is still downloading". The Start button also left an uncaught error in the browser console.
+
+**Fixes:**
+- **Older clips are accepted:** a `stream_clip.json` without a `"done"` field, with status `clip_ready` and the clip present, counts as finished. Older versions only wrote that file after the clip was complete.
+  - A new-format file with `"done": false` is still blocked.
+- **Start button:** start errors only show in the Process view's log box, with no uncaught console error.
+
+**Checked:**
+- an old-format clip starts with its saved AUTO offset;
+- `"done": false` is still refused;
+- `"done": true` is accepted.
+
 ## Results on the example videos
 
 | | Original / first version | Now |

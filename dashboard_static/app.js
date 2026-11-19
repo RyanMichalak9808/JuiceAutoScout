@@ -1163,10 +1163,14 @@ async function startCurrentProcessMatch() {
   if (!match || !match.video_url) {
     return;
   }
-  await startMatchProcessing(match, {
-    focusMatch: true,
-    openProcessView: Boolean(state.settings?.auto_open_process_view),
-  });
+  try {
+    await startMatchProcessing(match, {
+      focusMatch: true,
+      openProcessView: Boolean(state.settings?.auto_open_process_view),
+    });
+  } catch (_error) {
+    // startMatchProcessing already shows the message in the Process view log
+  }
 }
 
 async function startMatchProcessing(match, options = {}) {

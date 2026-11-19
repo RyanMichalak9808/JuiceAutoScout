@@ -529,6 +529,21 @@ Cleanup deleted only the ticked stream audio and finished-match video (48 MB), a
 - A match faked as mid-download (`done: false`, partial file) was not queueable, and starting it was refused. After it was marked done, it was queueable.
 - Browser test with the slow stand-in downloader, same as section 16: the first match still started processing 21 s in, while the next one was downloading. The split finished at 125 s, with no page errors.
 
+### 18. Fix: Windows crash on a log message (eighteenth commit)
+
+**Bug** (reported on Windows, USMOKSKCWM7 Q4):
+- Tracking stopped with `UnicodeEncodeError: 'charmap' codec can't encode character '\u2190'`.
+- When robots that had been touching were relabeled, the log line used an arrow (`R1←R2`). The Windows console's default text encoding (cp1252) can't print it, so Python ended the whole job.
+
+**Fixes:**
+- **No print can stop a run any more:** importing `autoscout` sets the console to print `?` for any character it can't show.
+- **Plain characters in output:** every printed or drawn message uses plain ASCII (`<-`, `->`, `-` instead of `←`, `→`, `—`). That covers the tracker, auto_scout, calibrate.py and debug.py.
+- **Dashboard job output:** jobs write UTF-8 (`PYTHONIOENCODING=utf-8`), and the dashboard reads it as UTF-8, replacing bad bytes instead of failing. A stray character can't break the job log either.
+
+**Checked:**
+- **The failing message:** printed under a simulated Windows console (`PYTHONIOENCODING=cp1252`), it now prints `R1?R2` and the run continues.
+- **Full run:** examples/piper_q9.mp4 under the same simulated console finished normally with all outputs. The swap message that crashed Q4 came up many times and printed cleanly as `swaps: R0<-R1, R1<-R0`.
+
 ## Results on the example videos
 
 | | Original / first version | Now |

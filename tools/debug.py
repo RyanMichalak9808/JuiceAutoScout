@@ -38,7 +38,7 @@ while pos < len(data):
         if len(records) < 20:  # only show first 20 data records
             if size == 24:
                 x, y, r = struct.unpack_from("<ddd", payload)
-                print(f"  DATA:  eid={eid} ts={ts} size={size} → x={x:.4f} y={y:.4f} rot={r:.4f}")
+                print(f"  DATA:  eid={eid} ts={ts} size={size} -> x={x:.4f} y={y:.4f} rot={r:.4f}")
             else:
                 print(f"  DATA:  eid={eid} ts={ts} size={size} raw={payload.hex()}")
     records.append((eid, ts, size))

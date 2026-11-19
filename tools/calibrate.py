@@ -73,7 +73,7 @@ def get_middle_frame(video_path, frame_number=None):
         print("[ERROR] Could not read frame from video.")
         sys.exit(1)
     t = frame_number / fps
-    print(f"[INFO] Loaded frame {frame_number}/{total} (t={t:.1f}s) — {frame.shape[1]}x{frame.shape[0]}")
+    print(f"[INFO] Loaded frame {frame_number}/{total} (t={t:.1f}s) - {frame.shape[1]}x{frame.shape[0]}")
     return frame
 
 
@@ -446,7 +446,7 @@ def main():
     result  = editor.run()
 
     if result is None:
-        print("[INFO] Cancelled — no file saved.")
+        print("[INFO] Cancelled - no file saved.")
         sys.exit(0)
 
     # result is [TL, TR, BR, BL] in image pixel coords

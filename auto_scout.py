@@ -565,7 +565,7 @@ def process_match(
                         entry_s = "".join(str(tid) for tid in merge_group.entry_order)
                         current_s = "".join(str(tid) for tid in merge_group.current_order)
                         label = "+".join("R{}".format(tid) for tid in merge_group.track_ids)
-                        label += " [{}→{}]".format(entry_s, current_s)
+                        label += " [{}->{}]".format(entry_s, current_s)
                     cv2.arrowedLine(dbg, (mcx, mcy), (ex, ey), color, 2)
                     cv2.putText(dbg, label, (mcx + 6, mcy - 8),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)

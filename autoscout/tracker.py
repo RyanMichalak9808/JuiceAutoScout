@@ -1368,10 +1368,10 @@ class RobotTracker:
                 self._pos_px[tids[k]] = sppx[n-1-k]
                 self._vel[tids[k]]    = sv[n-1-k]
                 self._vel_px[tids[k]] = svpx[n-1-k]
-            print("[INFO] Separation WITH crossing — swapped: {}".format(
+            print("[INFO] Separation WITH crossing - swapped: {}".format(
                 sorted(mg.track_ids)))
         else:
-            print("[INFO] Separation, no crossing — preserved: {}".format(
+            print("[INFO] Separation, no crossing - preserved: {}".format(
                 sorted(mg.track_ids)))
 
     def _apply_separation_multi(self, mg: MergeGroup) -> None:
@@ -1400,7 +1400,7 @@ class RobotTracker:
         if len(current) != n:
             # current_order was never fully populated (e.g. peaks always < n)
             # Fall back to simple re-anchor without permutation
-            print("[WARN] Multi-robot merge resolved with incomplete order info — "
+            print("[WARN] Multi-robot merge resolved with incomplete order info - "
                   "re-anchoring in place: {}".format(sorted(mg.track_ids)))
             self._reanchor_from_peaks(mg.track_ids, mg.peak_assignment)
             return
@@ -1446,9 +1446,9 @@ class RobotTracker:
 
         if swapped:
             print("[INFO] Multi-robot merge resolved WITH permutation: "
-                  "{} — swaps: {}".format(
+                  "{} - swaps: {}".format(
                       sorted(mg.track_ids),
-                      ", ".join("R{}←R{}".format(d, s) for d, s in swapped)))
+                      ", ".join("R{}<-R{}".format(d, s) for d, s in swapped)))
         else:
             print("[INFO] Multi-robot merge resolved, no permutation: {}".format(
                 sorted(mg.track_ids)))
@@ -1601,7 +1601,7 @@ class RobotTracker:
         for slot, tid in enumerate(expected_order):
             previous_tid = mg.entry_order[slot] if slot < len(mg.entry_order) else tid
             if previous_tid != tid:
-                swaps.append("R{}←slot{}".format(previous_tid, slot))
+                swaps.append("R{}<-slot{}".format(previous_tid, slot))
         print("[INFO] Multi-robot merge relabeled from exit blobs: {}".format(
             sorted(mg.track_ids)))
         return True

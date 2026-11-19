@@ -758,6 +758,7 @@ class DashboardState:
         if configured_extractor_args:
             env["AUTOSCOUT_YTDLP_EXTRACTOR_ARGS"] = configured_extractor_args
         env["AUTOSCOUT_DASHBOARD_MODE"] = "1"
+        env["PYTHONIOENCODING"] = "utf-8"
         env.setdefault("AUTOSCOUT_DASHBOARD_PREVIEW_EVERY", "5")
 
         job.status = "running"
@@ -776,6 +777,8 @@ class DashboardState:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 bufsize=1,
                 env=env,
             )

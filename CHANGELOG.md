@@ -513,6 +513,22 @@ Cleanup deleted only the ticked stream audio and finished-match video (48 MB), a
 - the whole split finished at 126 s;
 - no page errors.
 
+### 17. "done" marker in stream_clip.json (seventeenth commit)
+
+**What:** each stream match's `stream_clip.json` now ends with a `"done"` field. Processing can only start once it is `true`.
+- **Before the download starts:** the file is written with `"done": false`.
+- **When the download finishes:** once the clip is complete and its exact AUTO start has been found, the file is rewritten with `"done": true` as its last line.
+- **Atomic writes:** each write goes to a temporary file that is then renamed, so a half-written file is never read.
+
+**Who checks it:**
+- **Dashboard:** a match is only marked processable after its `stream_clip.json` says done and its `match_video.mp4` is there. This applies both while splitting and when the event is reloaded.
+- **Job start:** starting a match whose clip isn't done is refused with "This match's stream clip is still downloading; it can be processed when the download is done."
+
+**Checked:**
+- Every match's file already ends with `"done": true` at the moment the match is reported ready.
+- A match faked as mid-download (`done: false`, partial file) was not queueable, and starting it was refused. After it was marked done, it was queueable.
+- Browser test with the slow stand-in downloader, same as section 16: the first match still started processing 21 s in, while the next one was downloading. The split finished at 125 s, with no page errors.
+
 ## Results on the example videos
 
 | | Original / first version | Now |

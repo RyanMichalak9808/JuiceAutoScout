@@ -220,6 +220,29 @@ def relocate_start(clip_path: str, expected_start_s: float) -> Optional[float]:
     return round(best["t"] - AUTO_START_BEFORE_BUZZER_S, 2)
 
 
+def write_clip_info(clip_dir: Path, info: Dict[str, object], done: bool) -> None:
+    """stream_clip.json for one match. "done" is written last: false while
+    the clip is downloading, true only once the clip and its AUTO start are
+    final. Processing may start only when it is true. Written atomically."""
+    tmp_path = clip_dir / "stream_clip.json.tmp"
+    with tmp_path.open("w", encoding="utf-8") as fh:
+        json.dump({**{k: v for k, v in info.items() if k != "done"}, "done": bool(done)}, fh, indent=2)
+    tmp_path.replace(clip_dir / "stream_clip.json")
+
+
+def read_clip_info(clip_dir: Path) -> Optional[Dict[str, object]]:
+    """stream_clip.json of a finished download, or None (missing, still
+    downloading, or unreadable)."""
+    try:
+        with (Path(clip_dir) / "stream_clip.json").open("r", encoding="utf-8") as fh:
+            info = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if info.get("done") is not True or not (Path(clip_dir) / "match_video.mp4").exists():
+        return None
+    return info
+
+
 def slugify(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", str(text or "").lower()).strip("-")
 
@@ -307,6 +330,8 @@ def split_stream(source: str, schedule: List[Dict[str, object]], out_root: Path,
             d["status"] = "processed"
             save_summary()
             continue
+        d["status"] = "downloading"
+        write_clip_info(clip_dir, {"source": source, **d}, done=False)
         if not clip.exists():
             log("[INFO] {} {} ({} of {})".format("Downloading" if is_url else "Cutting", d["label"],
                                                   labeled.index(d) + 1, len(labeled)))
@@ -324,8 +349,7 @@ def split_stream(source: str, schedule: List[Dict[str, object]], out_root: Path,
         d["start_offset"] = exact if exact is not None else round(expected, 2)
         d["start_from"] = "clip audio" if exact is not None else "stream audio"
         d["status"] = "clip_ready"
-        with (clip_dir / "stream_clip.json").open("w", encoding="utf-8") as fh:
-            json.dump({"source": source, **d}, fh, indent=2)
+        write_clip_info(clip_dir, {"source": source, **d}, done=True)
         save_summary()
         on_clip(d)
 

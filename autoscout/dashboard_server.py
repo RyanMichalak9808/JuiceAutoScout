@@ -326,7 +326,9 @@ class DashboardState:
                 split = json.load(handle)
         except (OSError, ValueError):
             return
-        clips = {m.get("label"): m for m in split.get("matches", []) if m.get("status") == "clip_ready"}
+        event_root = path.parent
+        clips = {m.get("label"): m for m in split.get("matches", [])
+                 if stream_split.read_clip_info(event_root / stream_split.slugify(m.get("label"))) is not None}
         for match in result.get("matches") or []:
             clip = clips.get(match.get("label"))
             if clip and not match.get("video_url"):
@@ -651,11 +653,16 @@ class DashboardState:
         command = [sys.executable, "auto_scout.py", "--output-dir", output_dir]
         clip_info_path = resolved_output_dir / "stream_clip.json"
         if payload.get("start_offset") in (None, "") and clip_info_path.exists():
-            # clip cut from a full stream: AUTO start is known from the field buzzer
-            if not (resolved_output_dir / "match_video.mp4").exists():
+            # clip cut from a full stream: AUTO start is known from the field buzzer.
+            # Only start once stream_clip.json says the download is done.
+            clip_info = stream_split.read_clip_info(resolved_output_dir)
+            if clip_info is None:
+                if (resolved_output_dir / "match_video.mp4").exists() or \
+                        (resolved_output_dir / "match_video.part.mp4").exists():
+                    raise RuntimeError("This match's stream clip is still downloading; "
+                                       "it can be processed when the download is done.")
                 raise RuntimeError("This match's stream clip was removed; run Split Stream again.")
-            with clip_info_path.open("r", encoding="utf-8") as handle:
-                payload = dict(payload, start_offset=json.load(handle).get("start_offset"))
+            payload = dict(payload, start_offset=clip_info.get("start_offset"))
         if payload.get("start_offset") in (None, ""):
             command.append("--auto-match-bounds")
 

@@ -273,7 +273,7 @@ class DashboardState:
         if current and current.get("status") == "running":
             return current
         status = {"event_code": event_code, "source": source, "status": "running", "log": [],
-                  "percent": None, "result": None}
+                  "percent": None, "result": None, "ready": []}
         self.stream_splits[event_code] = status
 
         def log(message: str) -> None:
@@ -282,6 +282,11 @@ class DashboardState:
 
         def progress(pct: float) -> None:
             status["percent"] = round(float(pct), 1)
+
+        def on_clip(match: Dict[str, object]) -> None:
+            # this match can be processed now, while the next clips download
+            status["ready"] = status["ready"] + [
+                {k: match.get(k) for k in ("label", "start_s", "start_offset", "confidence")}]
 
         def run() -> None:
             try:
@@ -294,7 +299,8 @@ class DashboardState:
                     attempts = [a["args"] for a in raw_attempts]
                 status["result"] = stream_split.split_stream(
                     source, schedule, self._event_output_root(event_code),
-                    yt_dlp_cmd=yt_cmd, yt_dlp_attempts=attempts, log=log, progress=progress)
+                    yt_dlp_cmd=yt_cmd, yt_dlp_attempts=attempts, log=log, progress=progress,
+                    on_clip=on_clip)
                 status["status"] = "done"
                 log("[INFO] Done: {} of {} matches labeled.".format(
                     status["result"]["labeled"], len(status["result"]["matches"])))

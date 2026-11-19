@@ -2321,9 +2321,11 @@ async function splitEventStream() {
     });
     for (;;) {
       const status = await fetch(`/api/event/split-stream?event_code=${encodeURIComponent(event.event_code)}`).then((r) => r.json());
+      applyReadyStreamClips(status);
       const last = (status.log || []).slice(-1)[0] || "Working...";
       const pct = status.status === "running" && Number.isFinite(status.percent) ? ` - ${Math.floor(status.percent)}%` : "";
-      dom.splitStreamStatus.textContent = last.replace(/^\[(INFO|ERROR)\]\s*/, "") + pct;
+      const ready = status.status === "running" && status.ready?.length ? ` • ${status.ready.length} ready to process` : "";
+      dom.splitStreamStatus.textContent = last.replace(/^\[(INFO|ERROR)\]\s*/, "") + pct + ready;
       if (status.status !== "running") {
         if (status.status === "done") {
           const low = status.result?.low_confidence || 0;
@@ -2380,6 +2382,27 @@ async function cleanupEventDisk() {
   } finally {
     dom.diskCleanupButton.disabled = false;
   }
+}
+
+// Matches whose stream clip is cut can be processed right away, while the
+// rest of the stream is still being fetched.
+function applyReadyStreamClips(status) {
+  const event = state.currentEvent;
+  if (!event || !status?.ready?.length || status.event_code !== event.event_code) return;
+  let changed = false;
+  for (const clip of status.ready) {
+    const match = (event.matches || []).find((m) => m.label === clip.label);
+    if (match && !match.video_url) {
+      match.video_url = status.source;
+      match.status = "stream_clip";
+      match.stream_clip = clip;
+      changed = true;
+    }
+  }
+  if (!changed) return;
+  saveDashboardState();
+  if (state.route === "overview") renderOverview();
+  void maybeRunAutoQueue();
 }
 
 function slugify(text) {

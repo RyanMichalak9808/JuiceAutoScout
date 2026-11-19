@@ -496,6 +496,23 @@ Cleanup deleted only the ticked stream audio and finished-match video (48 MB), a
 - the dashboard, both tools through the dashboard, and the manual tracker opened straight from disk;
 - **zero requests outside the local computer**, and the logo loads in all of them.
 
+### 16. Process stream matches while the rest are still downloading (sixteenth commit)
+
+**Problem:** Split Stream fetched every match clip first, and only then made the matches available. Processing couldn't start until the whole stream was done. (Matches with their own video were already downloaded inside their own job, so they were not affected.)
+
+**Fix:**
+- **Splitter:** each match becomes available as soon as its clip and its `stream_clip.json` (the clip's AUTO start) are written. `stream_split.json` is saved after every clip, so a dashboard reload in the middle of a split sees the progress.
+- **Server:** the split status now lists the clips that are ready (`ready`).
+- **Dashboard:**
+  - while polling, it marks those matches as processable right away and wakes the global queue;
+  - the status shows e.g. "Downloading Qualification 5 (5 of 18) - 40% • 4 ready to process".
+- **Re-splitting skips finished matches:** matches already processed (`done.json`, clip cleaned up) are not downloaded again.
+
+**Checked** in the browser with the real event, using a stand-in for yt-dlp that takes about 5 s per match section, and the global queue on:
+- the first match started processing 21 s in, while only 1 clip was ready and match 2 was still downloading;
+- the whole split finished at 126 s;
+- no page errors.
+
 ## Results on the example videos
 
 | | Original / first version | Now |

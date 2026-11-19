@@ -227,7 +227,8 @@ def slugify(text: str) -> str:
 def split_stream(source: str, schedule: List[Dict[str, object]], out_root: Path,
                  yt_dlp_cmd: Optional[List[str]] = None, yt_dlp_attempts: Optional[List[List[str]]] = None,
                  log: Callable[[str], None] = print, cut: bool = True,
-                 progress: Callable[[float], None] = lambda pct: None) -> Dict[str, object]:
+                 progress: Callable[[float], None] = lambda pct: None,
+                 on_clip: Callable[[Dict[str, object]], None] = lambda match: None) -> Dict[str, object]:
     """source: local video/audio file or a YouTube URL. Writes
     out_root/<slug(label)>/match_video.mp4 + stream_clip.json and
     out_root/stream_split.json. Returns the summary."""
@@ -272,9 +273,25 @@ def split_stream(source: str, schedule: List[Dict[str, object]], out_root: Path,
     label_matches(detected, schedule)
 
     labeled = [d for d in detected if d.get("label")]
+
+    def save_summary() -> Dict[str, object]:
+        # written after every clip, so a match can be processed as soon as its
+        # clip is ready (and a dashboard reload mid-split sees the progress)
+        summary = {"source": source, "matches": detected,
+                   "labeled": len(labeled),
+                   "clips_ready": sum(1 for d in detected if d.get("status") == "clip_ready"),
+                   "low_confidence": sum(1 for d in detected if d["confidence"] != "high")}
+        tmp_path = out_root / "stream_split.json.tmp"
+        with tmp_path.open("w", encoding="utf-8") as fh:
+            json.dump(summary, fh, indent=2)
+        tmp_path.replace(out_root / "stream_split.json")
+        return summary
+
+    for d in detected:
+        d["status"] = "pending" if d.get("label") else "unlabeled"
+    save_summary()
     for d in detected:
         if not d.get("label"):
-            d["status"] = "unlabeled"
             continue
         clip_dir = out_root / slugify(d["label"])
         clip = clip_dir / "match_video.mp4"
@@ -285,6 +302,11 @@ def split_stream(source: str, schedule: List[Dict[str, object]], out_root: Path,
             d["status"] = "detected"
             continue
         clip_dir.mkdir(parents=True, exist_ok=True)
+        if (clip_dir / "done.json").exists() and not clip.exists():
+            # already processed (its clip was cleaned up): nothing to fetch
+            d["status"] = "processed"
+            save_summary()
+            continue
         if not clip.exists():
             log("[INFO] {} {} ({} of {})".format("Downloading" if is_url else "Cutting", d["label"],
                                                   labeled.index(d) + 1, len(labeled)))
@@ -304,10 +326,7 @@ def split_stream(source: str, schedule: List[Dict[str, object]], out_root: Path,
         d["status"] = "clip_ready"
         with (clip_dir / "stream_clip.json").open("w", encoding="utf-8") as fh:
             json.dump({"source": source, **d}, fh, indent=2)
+        save_summary()
+        on_clip(d)
 
-    summary = {"source": source, "matches": detected,
-               "labeled": sum(1 for d in detected if d.get("label")),
-               "low_confidence": sum(1 for d in detected if d["confidence"] != "high")}
-    with (out_root / "stream_split.json").open("w", encoding="utf-8") as fh:
-        json.dump(summary, fh, indent=2)
-    return summary
+    return save_summary()

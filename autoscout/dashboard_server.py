@@ -21,6 +21,7 @@ from urllib.parse import parse_qs, urlparse
 from autoscout.ftc_events import discover_event_videos
 from autoscout.scouting_stats import compute_team_stats
 from autoscout import stream_split
+from autoscout import scouting_data
 from autoscout.hardware import collect_hardware_profile, collect_runtime_usage
 from autoscout.ytdlp import (
     auth_help_message,
@@ -409,6 +410,19 @@ class DashboardState:
         result = self.disk_usage(event_code)
         result.update(freed_bytes=freed, removed=removed, errors=errors)
         return result
+
+    def scouting(self, event_code: str, ftc_matches: List[Dict[str, object]]) -> Dict[str, object]:
+        """Processed-match data for the Analytics page."""
+        event_root = self._event_output_root(str(event_code or "").strip().upper())
+        return scouting_data.load_event(event_root, ftc_matches, self._workspace_url)
+
+    def save_team_map(self, event_code: str, match_dir: str, mapping: Dict[str, object]) -> Dict[str, object]:
+        event_root = self._event_output_root(str(event_code or "").strip().upper()).resolve()
+        target = (event_root / str(match_dir or "")).resolve()
+        if target.parent != event_root or not (target / "done.json").exists():
+            raise RuntimeError("Processed match not found.")
+        scouting_data.save_team_map(target, mapping or {})
+        return {"saved": True}
 
     def get_settings(self) -> Dict[str, object]:
         with self.settings_lock:
@@ -1222,6 +1236,16 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
 
             if path == "/api/event/split-stream":
                 self._write_json(self.server.state.start_stream_split(body))
+                return
+
+            if path == "/api/event/scouting":
+                self._write_json(self.server.state.scouting(
+                    str(body.get("event_code") or ""), list(body.get("matches") or [])))
+                return
+
+            if path == "/api/event/team-map":
+                self._write_json(self.server.state.save_team_map(
+                    str(body.get("event_code") or ""), str(body.get("dir") or ""), body.get("map") or {}))
                 return
 
             if path == "/api/event/cleanup":

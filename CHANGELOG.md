@@ -646,6 +646,43 @@ Cleanup deleted only the ticked stream audio and finished-match video (48 MB), a
 - **Browser:** a corner 140 px below a 640x360 frame stayed exactly where it was and was visible. One at y=900 was pulled in to the border (y=680) and visible. Dragging a corner far beyond the canvas stopped at the limit. No page errors.
 - **Automatic calibration** on piper_q9, piper_q11 and shanghai_q2_playoff5: byte-identical to before.
 
+### 24. Scouting from processed matches on the Analytics page (twenty-fourth commit)
+
+**What:** the CSVs each processed match writes are now turned into scouting data on the Analytics page. Two new panels sit under the FTC Events stats.
+
+**Team stats from processed matches:** one row per team. It can be sorted by any of these columns (EPA/OPR from the FTC Events stats are included for comparison):
+- **Matches:** processed matches the team played in.
+- **Made / match, Missed / match, Accuracy %, AUTO made / match:** shots by that team's robot.
+- **Alliance tips / match:** HIVE tips by the team's alliance. Tips are per alliance, not per robot.
+- **Distance (ft) / match** and **Moving %**.
+- **Red flags:** matches where the robot got a red flag (stalls, not moving and so on).
+
+Click a team to see its matches one by one. Click one of those matches to open it in the match menu.
+
+**Match menu:** pick any processed match from the dropdown to see:
+- the FTC Events teams and score;
+- per robot: team, alliance, shots made/missed, AUTO made, distance, moving %, longest stall, field coverage and red flags;
+- the alliance summary: tips by phase, first tip, time between tips and notes;
+- the HIVE tip timeline;
+- the shot heatmap and POLLEN density images;
+- download links for every CSV.
+
+**Robot -> team mapping:** the tracker only knows R0-R3.
+- **Guess:** each robot's alliance is guessed from the HIVE it shoots into most, and it gets that alliance's teams in robot order.
+- **Fix:** in the match menu, the team dropdowns fix the guess. **Save robot teams** writes `team_map.json` into the match folder. Each team can only be one robot.
+- **Marking:** matches and teams still relying on a guess are marked `*` until confirmed.
+
+**How:**
+- **`autoscout/scouting_data.py`** reads each processed match folder (`done.json`): `robot_summary.csv`, `alliance_summary.csv`, `shot_events.csv`, `hive_tips.csv` and the images. It links each match to its FTC Events teams by label and totals the stats per team.
+- **Endpoints:** `POST /api/event/scouting` and `POST /api/event/team-map`.
+- **Phone width:** analytics tables scroll sideways inside their panels instead of widening the page.
+
+**Checked** in the browser with the real event (USMOKSKCWM7) and two processed matches (Piper Q9 and Q11 filed as Qualification 9 and 11):
+- the team table, team detail, match menu, tips, images and CSV links all show;
+- saving a mapping writes `team_map.json`, marks the match confirmed and updates the team totals;
+- no page errors, and the page fits at 420 px width.
+- **Limit of the guess:** in Q9, three robots shot mostly into the red HIVE, so one guessed mapping was wrong. That's what the confirm step is for.
+
 ## Results on the example videos
 
 | | Original / first version | Now |

@@ -89,6 +89,14 @@ function bindDom() {
   dom.analyticsInfo = document.getElementById("analyticsInfo");
   dom.analyticsTable = document.getElementById("analyticsTable");
   dom.analyticsChart = document.getElementById("analyticsChart");
+  dom.scoutSortSelect = document.getElementById("scoutSortSelect");
+  dom.scoutRefreshButton = document.getElementById("scoutRefreshButton");
+  dom.scoutInfo = document.getElementById("scoutInfo");
+  dom.scoutTeamTable = document.getElementById("scoutTeamTable");
+  dom.scoutTeamDetail = document.getElementById("scoutTeamDetail");
+  dom.scoutMatchTitle = document.getElementById("scoutMatchTitle");
+  dom.scoutMatchSelect = document.getElementById("scoutMatchSelect");
+  dom.scoutMatchDetail = document.getElementById("scoutMatchDetail");
   dom.eventForm = document.getElementById("eventForm");
   dom.seasonInput = document.getElementById("seasonInput");
   dom.eventCodeInput = document.getElementById("eventCodeInput");
@@ -174,6 +182,9 @@ function bindEvents() {
   dom.eventForm.addEventListener("submit", handleEventLoad);
   dom.reloadEventButton.addEventListener("click", reloadCurrentEvent);
   dom.splitStreamButton.addEventListener("click", splitEventStream);
+  dom.scoutSortSelect.addEventListener("change", renderScouting);
+  dom.scoutRefreshButton.addEventListener("click", () => loadScouting(true));
+  dom.scoutMatchSelect.addEventListener("change", () => { state.scoutMatch = dom.scoutMatchSelect.value; renderScoutMatch(); });
   dom.diskCleanupButton.addEventListener("click", cleanupEventDisk);
   dom.globalStartButton.addEventListener("click", toggleGlobalQueue);
   dom.refreshUsageButton.addEventListener("click", loadUsage);
@@ -885,6 +896,7 @@ function renderAnalytics() {
   if (!dom.analyticsTable) {
     return;
   }
+  void loadScouting();
   const analytics = state.currentEvent?.analytics;
   const teams = analytics?.teams || [];
   if (!teams.length) {
@@ -916,6 +928,128 @@ function renderAnalytics() {
     <line x1="${P}" y1="${H - P}" x2="${W - P}" y2="${H - P}" class="axis"/><line x1="${P}" y1="${P}" x2="${P}" y2="${H - P}" class="axis"/>
     <text x="${W / 2}" y="${H - 8}" class="axl">OPR (${lo.toFixed(0)} to ${hi.toFixed(0)})</text>
     <text x="${P}" y="${P - 14}" class="axl" style="text-anchor:start">Win% (0-100)</text>${pts}</svg>`;
+}
+
+// ---- Scouting: data from processed matches ---------------------------------
+
+async function loadScouting(force = false) {
+  const event = state.currentEvent;
+  if (!event || !dom.scoutTeamTable) return;
+  if (!force && state.scouting && state.scouting.event_code === event.event_code
+      && Date.now() - state.scouting.loaded_at < 15000) {
+    renderScouting();
+    return;
+  }
+  try {
+    const data = await apiPost("/api/event/scouting", {
+      event_code: event.event_code,
+      matches: (event.matches || []).map((m) => ({ label: m.label, red_teams: m.red_teams, blue_teams: m.blue_teams,
+        red_score: m.red_score, blue_score: m.blue_score })),
+    });
+    state.scouting = { ...data, event_code: event.event_code, loaded_at: Date.now() };
+  } catch (error) {
+    dom.scoutInfo.textContent = error.message;
+    return;
+  }
+  renderScouting();
+}
+
+function scoutTeamRows() {
+  const ftc = new Map((state.currentEvent?.analytics?.teams || []).map((t) => [String(t.team), t]));
+  return (state.scouting?.teams || []).map((t) => ({ ...t, EPA: ftc.get(String(t.team))?.EPA, OPR: ftc.get(String(t.team))?.OPR }));
+}
+
+function renderScouting() {
+  const data = state.scouting;
+  if (!data) return;
+  const matches = data.matches || [];
+  const rows = scoutTeamRows();
+  const unconfirmed = matches.filter((m) => !m.team_map_confirmed).length;
+  dom.scoutInfo.textContent = matches.length
+    ? `${matches.length} processed match(es), ${rows.length} teams. ${unconfirmed ? `${unconfirmed} match(es) still use guessed robot-to-team mapping - confirm them in the Match menu below (marked *).` : "All robot-to-team mappings confirmed."} Shots and distance are per robot; tips are per alliance.`
+    : "No processed matches yet. Process matches from the Overview page and their tracked stats appear here.";
+  const key = dom.scoutSortSelect.value || "made_per_match";
+  rows.sort((a, b) => (b[key] ?? -1) - (a[key] ?? -1));
+  const cols = [["matches", "Matches"], ["made_per_match", "Made/m"], ["missed_per_match", "Missed/m"], ["accuracy_pct", "Acc%"],
+    ["auto_made_per_match", "AUTO made/m"], ["alliance_tips_per_match", "Alliance tips/m"], ["distance_ft_per_match", "Distance ft/m"],
+    ["moving_pct", "Moving%"], ["red_flag_matches", "Red flags"], ["EPA", "EPA"], ["OPR", "OPR"]];
+  dom.scoutTeamTable.innerHTML = rows.length ? `<table class="analytics-table scout-table"><tr><th>#</th><th>Team</th>${cols.map(([k, l]) => `<th${k === key ? ' class="active-col"' : ""}>${l}</th>`).join("")}</tr>${
+    rows.map((r, i) => `<tr data-team="${escapeHtmlAttr(r.team)}"${state.scoutTeam === r.team ? ' class="selected"' : ""}><td>${i + 1}</td><td>${escapeHtml(r.team)}${r.confirmed < r.matches ? "*" : ""}</td>${
+      cols.map(([k]) => `<td${k === key ? ' class="active-col"' : ""}>${r[k] ?? "-"}</td>`).join("")}</tr>`).join("")}</table>
+    <p class="helper-copy">* includes matches with a guessed robot-to-team mapping. Click a team for its matches.</p>` : "";
+  dom.scoutTeamTable.querySelectorAll("tr[data-team]").forEach((tr) => tr.addEventListener("click", () => {
+    state.scoutTeam = state.scoutTeam === tr.dataset.team ? null : tr.dataset.team;
+    renderScouting();
+  }));
+  renderScoutTeamDetail();
+  // match menu
+  const current = dom.scoutMatchSelect.value;
+  dom.scoutMatchSelect.innerHTML = matches.map((m) => `<option value="${escapeHtmlAttr(m.dir)}">${escapeHtml(m.label)}${m.team_map_confirmed ? "" : " *"}</option>`).join("");
+  if (state.scoutMatch && matches.some((m) => m.dir === state.scoutMatch)) dom.scoutMatchSelect.value = state.scoutMatch;
+  else if (current && matches.some((m) => m.dir === current)) dom.scoutMatchSelect.value = current;
+  renderScoutMatch();
+}
+
+function renderScoutTeamDetail() {
+  const team = state.scoutTeam;
+  if (!team) { dom.scoutTeamDetail.innerHTML = ""; return; }
+  const lines = [];
+  for (const m of state.scouting.matches) {
+    const r = m.robots.find((x) => x.team === team);
+    if (!r) continue;
+    const tips = m.alliances.find((a) => a.alliance === r.alliance)?.tips ?? "-";
+    const score = r.alliance === "red" ? m.red_score : r.alliance === "blue" ? m.blue_score : null;
+    lines.push(`<tr data-dir="${escapeHtmlAttr(m.dir)}"><td>${escapeHtml(m.label)}${m.team_map_confirmed ? "" : "*"}</td><td>${escapeHtml(r.alliance || "?")}</td><td>${score ?? "-"}</td>
+      <td>${r.robot}</td><td>${r.shots_made}</td><td>${r.shots_missed}</td><td>${r.auto_made}</td><td>${tips}</td><td>${Math.round(r.distance_in / 12)}</td><td>${r.moving_pct}</td><td class="flags">${escapeHtml(r.red_flags || "-")}</td></tr>`);
+  }
+  dom.scoutTeamDetail.innerHTML = `<h3 class="scout-sub">Team ${escapeHtml(team)} - match by match</h3>
+    <table class="analytics-table scout-detail"><tr><th>Match</th><th>Alliance</th><th>Score</th><th>Robot</th><th>Made</th><th>Missed</th><th>AUTO made</th><th>Alliance tips</th><th>Distance ft</th><th>Moving%</th><th>Red flags</th></tr>${lines.join("")}</table>`;
+  dom.scoutTeamDetail.querySelectorAll("tr[data-dir]").forEach((tr) => tr.addEventListener("click", () => {
+    state.scoutMatch = tr.dataset.dir;
+    dom.scoutMatchSelect.value = tr.dataset.dir;
+    renderScoutMatch();
+    dom.scoutMatchSelect.scrollIntoView({ behavior: "smooth", block: "center" });
+  }));
+}
+
+function renderScoutMatch() {
+  const m = (state.scouting?.matches || []).find((x) => x.dir === dom.scoutMatchSelect.value);
+  if (!m) { dom.scoutMatchDetail.innerHTML = `<p class="helper-copy">No processed matches yet.</p>`; dom.scoutMatchTitle.textContent = "Processed match"; return; }
+  state.scoutMatch = m.dir;
+  dom.scoutMatchTitle.textContent = m.label;
+  const teams = [...m.red_teams.map((t) => [t, "red"]), ...m.blue_teams.map((t) => [t, "blue"])];
+  const teamSelect = (r) => `<select data-robot="${escapeHtmlAttr(r.robot)}"><option value="">-</option>${
+    teams.map(([t, a]) => `<option value="${escapeHtmlAttr(t)}"${r.team === t ? " selected" : ""}>${escapeHtml(t)} (${a})</option>`).join("")}</select>`;
+  const robots = m.robots.map((r) => `<tr><td>${r.robot}</td><td>${teamSelect(r)}</td><td>${escapeHtml(r.alliance || "?")}</td><td>${r.shots_made}</td><td>${r.shots_missed}</td><td>${r.auto_made}</td>
+    <td>${Math.round(r.distance_in / 12)}</td><td>${r.moving_pct}</td><td>${r.longest_stall_s}</td><td>${r.field_coverage_pct}</td><td class="flags">${escapeHtml(r.red_flags || "-")}</td></tr>`).join("");
+  const alliances = m.alliances.map((a) => `<tr><td class="${escapeHtmlAttr(a.alliance)}">${escapeHtml(a.alliance)}</td><td>${a.tips}</td><td>${a.auto_tips}</td><td>${a.teleop_tips}</td><td>${a.endgame_tips_final_60s}</td><td>${a.first_tip_s || "-"}</td><td>${a.median_s_between_tips || "-"}</td><td class="flags">${escapeHtml(a.notes || "")}</td></tr>`).join("");
+  const tips = m.tips.map((t) => `<span class="tip-chip ${escapeHtmlAttr(t.alliance)}">${escapeHtml(t.clock || "")} ${escapeHtml(t.phase || "")}</span>`).join("") || "none";
+  const files = Object.entries(m.files).filter(([n]) => n.endsWith(".csv")).map(([n, u]) => `<a href="${escapeHtmlAttr(u)}" download>${escapeHtml(n)}</a>`).join(" · ");
+  const img = (n, cap) => (m.files[n] ? `<figure><img src="${escapeHtmlAttr(m.files[n])}" alt="${escapeHtmlAttr(cap)}"><figcaption>${escapeHtml(cap)}</figcaption></figure>` : "");
+  dom.scoutMatchDetail.innerHTML = `
+    <p class="match-score"><span class="red">Red ${escapeHtml(m.red_teams.join(" + ") || "?")}: ${m.red_score ?? "-"}</span> &nbsp; <span class="blue">Blue ${escapeHtml(m.blue_teams.join(" + ") || "?")}: ${m.blue_score ?? "-"}</span></p>
+    <h3 class="scout-sub">Robots ${m.team_map_confirmed ? "" : '<span class="job-meta">(teams guessed from the HIVE each robot shoots into - check against the video and save)</span>'}</h3>
+    <table class="analytics-table scout-detail"><tr><th>Robot</th><th>Team</th><th>Alliance</th><th>Made</th><th>Missed</th><th>AUTO made</th><th>Distance ft</th><th>Moving%</th><th>Longest stall s</th><th>Coverage%</th><th>Red flags</th></tr>${robots}</table>
+    <div class="inline-actions"><button type="button" class="primary" id="scoutSaveMap">Save robot teams</button><span class="job-meta" id="scoutSaveStatus"></span></div>
+    <h3 class="scout-sub">Alliances</h3>
+    <table class="analytics-table scout-detail"><tr><th>Alliance</th><th>Tips</th><th>AUTO</th><th>TELEOP</th><th>Final 60s</th><th>First tip s</th><th>Median s between</th><th>Notes</th></tr>${alliances}</table>
+    <h3 class="scout-sub">HIVE tips</h3><div class="tip-row">${tips}</div>
+    <div class="scout-images">${img("shot_heatmap.png", "Shot heatmap")}${img("resource_density.png", "POLLEN on the field")}</div>
+    <p class="helper-copy">CSV: ${files || "none"}</p>`;
+  document.getElementById("scoutSaveMap").addEventListener("click", async () => {
+    const map = {};
+    dom.scoutMatchDetail.querySelectorAll("select[data-robot]").forEach((s) => { map[s.dataset.robot] = s.value || null; });
+    const picked = Object.values(map).filter(Boolean);
+    const status = document.getElementById("scoutSaveStatus");
+    if (new Set(picked).size !== picked.length) { status.textContent = "Each team can only be one robot."; return; }
+    try {
+      await apiPost("/api/event/team-map", { event_code: state.currentEvent.event_code, dir: m.dir, map });
+      await loadScouting(true);
+      status.textContent = "Saved.";
+    } catch (error) {
+      status.textContent = error.message;
+    }
+  });
 }
 
 function statCard(label, value) {

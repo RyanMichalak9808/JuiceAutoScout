@@ -1178,3 +1178,23 @@ label {
 .disk-options .disk-size { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 
 .settings-group { margin-top: 10px; }
+
+.scout-table tr[data-team], .scout-detail tr[data-dir] { cursor: pointer; }
+.scout-table tr.selected td { background: rgba(254,143,0,0.12); }
+.scout-sub { margin: 16px 0 6px; font-size: 15px; }
+.scout-detail td.flags { text-align: left; color: #ffb4a8; font-size: 12px; }
+.scout-detail select { padding: 2px 4px; }
+.match-score { font-weight: 600; }
+.match-score .red, td.red { color: #ff6b6b; }
+.match-score .blue, td.blue { color: #6bb0ff; }
+.tip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.tip-chip { padding: 2px 8px; border-radius: 10px; font-size: 12px; background: rgba(255,255,255,0.08); }
+.tip-chip.red { border: 1px solid #ff6b6b; } .tip-chip.blue { border: 1px solid #6bb0ff; }
+.scout-images { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 12px; }
+.scout-images figure { margin: 0; flex: 1 1 300px; max-width: 100%; }
+.scout-images img { width: 100%; height: auto; border-radius: 6px; background: #111; }
+.scout-images figcaption { font-size: 12px; opacity: 0.7; margin-top: 4px; }
+#scoutTeamTable, #scoutTeamDetail, #scoutMatchDetail { overflow-x: auto; }
+#analyticsView .dashboard-grid > .panel { min-width: 0; }
+#analyticsTable, #analyticsChart { overflow-x: auto; }
+#analyticsView .panel-head { flex-wrap: wrap; gap: 8px; }

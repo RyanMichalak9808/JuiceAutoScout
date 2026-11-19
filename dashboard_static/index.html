@@ -339,6 +339,45 @@
             <div class="panel-head"><div><div class="section-title">Chart</div><h2>OPR vs Win%</h2></div></div>
             <div id="analyticsChart"></div>
           </article>
+          <article class="panel panel-wide">
+            <div class="panel-head">
+              <div>
+                <div class="section-title">Scouting</div>
+                <h2>Team stats from processed matches</h2>
+              </div>
+              <div class="inline-actions">
+                <label>Sort by
+                  <select id="scoutSortSelect">
+                    <option value="made_per_match">Made / match</option>
+                    <option value="accuracy_pct">Accuracy</option>
+                    <option value="auto_made_per_match">AUTO made / match</option>
+                    <option value="alliance_tips_per_match">Alliance tips / match</option>
+                    <option value="distance_ft_per_match">Distance / match</option>
+                    <option value="EPA">EPA</option>
+                    <option value="OPR">OPR</option>
+                  </select>
+                </label>
+                <button type="button" id="scoutRefreshButton">Refresh</button>
+              </div>
+            </div>
+            <p class="helper-copy" id="scoutInfo">Process matches to see tracked stats here.</p>
+            <div id="scoutTeamTable"></div>
+            <div id="scoutTeamDetail"></div>
+          </article>
+          <article class="panel panel-wide">
+            <div class="panel-head">
+              <div>
+                <div class="section-title">Match</div>
+                <h2 id="scoutMatchTitle">Processed match</h2>
+              </div>
+              <div class="inline-actions">
+                <label>Match
+                  <select id="scoutMatchSelect"></select>
+                </label>
+              </div>
+            </div>
+            <div id="scoutMatchDetail"><p class="helper-copy">No processed matches yet.</p></div>
+          </article>
         </div>
       </section>
 

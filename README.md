@@ -89,6 +89,10 @@ The dashboard adds:
 
 If an event only has one long stream, paste its YouTube link into **Full stream YouTube link (optional)** on the Load Event screen; the stream is split as soon as the event loads. (A local video path works too, and the split can be started later from **Full Stream** on the Overview page.) The field buzzers in the audio are used to find every match, the matches are labeled from the FTC Events schedule, and a clip with the exact AUTO start is cut for each one. The matches can then be processed like any other.
 
+### Scouting
+
+The **Analytics** page turns processed matches into scouting data: a sortable per-team table (shots made/missed, accuracy, AUTO shots, alliance tips, distance, red flags, next to EPA/OPR), a match-by-match view per team, and a menu for every processed match with its tables, tip timeline, heatmaps and CSV downloads. The tracker labels robots R0-R3; their teams are guessed from the HIVE they shoot into and can be confirmed per match (**Save robot teams**).
+
 ## CLI Flags
 | Flag | Type | Default | Description |
 | -------- | -------- | -------- | -------- |

@@ -603,6 +603,33 @@ Cleanup deleted only the ticked stream audio and finished-match video (48 MB), a
 
 **Checked:** a real job on examples/piper_q11.mp4 through the dashboard (calibrate, approve via the API, track). It logged 3 s calibration + 62 s tracking = 65 s, and the 3 s spent waiting before approval was not counted.
 
+### 22. Fix: shots not detected on 60 fps video (twenty-second commit)
+
+**Bug** (reported on stream clips): almost no shots were detected, and the debug video only showed short grey ball trails. Grey means a ball is being followed but was never accepted as a shot.
+
+**Cause:**
+- The shot detector was tuned on 30 fps video. Its gates, gravity and speed limits are per frame, and only resolution was scaled for, not frame rate.
+- YouTube section downloads are often 60 fps. There a ball moves half as far per frame and "gravity" per frame is a quarter as strong. The predicted path then misses the real ball, tracks break into short pieces, and none qualifies as a shot.
+- **Not the cause:** the field crop. Its window always reaches the top of the frame, so shot arcs above the field stay inside it. On Q9, shots, tips and positions were byte-identical with the crop on and off.
+
+**Fix:**
+- The shot detector now gets about 30 frames per second: every 2nd frame on 60 fps video, as a ~30 fps frame index, so its tuning applies unchanged. Shot frame numbers in the output are mapped back to real video frames.
+- At 30 fps nothing changes. On Q9, all outputs were byte-identical to before.
+- On 60 fps video the log says `Shot detector runs on every 2 frames (~30 fps).`
+
+**Checked** on a 60 s teleop stretch of examples/piper_q9.mp4 (30-90 s):
+
+| Video | Code | Made | Missed |
+|---|---|---|---|
+| original 30 fps | | 12 | 7 |
+| 60 fps (each frame shown twice) | old | 1 | 0 |
+| 60 fps (each frame shown twice) | fixed | 12 | 2 |
+| 60 fps motion-interpolated | old | 7 | 4 |
+| 60 fps motion-interpolated | fixed | 9 | 4 |
+
+- **Made shots:** fully recovered on the duplicated clip, with the same times and HIVEs as 30 fps.
+- **Missed shots are still under-counted at 60 fps.** Part of that is the test clip's re-encoding: re-encoding the 30 fps clip alone already drops 7 misses to 5. The rest needs a real 60 fps match to tune against.
+
 ## Results on the example videos
 
 | | Original / first version | Now |

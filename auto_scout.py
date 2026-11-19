@@ -44,6 +44,7 @@ from util.juice_log import (
 
 SAVE_ALL_DEBUG_AROUND_MERGES = False
 PROCESS_EVERY_SOURCE_FRAME = True
+SHOT_DETECTOR_FPS = 30.0   # frame rate the shot detector's per-frame tuning is for
 DASHBOARD_EVENT_PREFIX = "@@AUTOSCOUT_DASHBOARD@@"
 
 
@@ -364,7 +365,23 @@ def process_match(
     resource_sampler = analytics.ResourceSampler(cv2, np)
     glitch_frames = 0
     pending_shot_events = []
-    shot_detector._fps = video_fps
+    # The shot detector is tuned for ~30 fps (its gates, gravity and speeds are
+    # per frame). On 60 fps video it gets every 2nd frame, on a ~30 fps index,
+    # so the same tuning applies; event frame numbers are mapped back.
+    ball_step = max(1, int(round(video_fps / SHOT_DETECTOR_FPS)))
+    shot_detector._fps = video_fps / ball_step
+    if ball_step > 1:
+        print("[INFO] Shot detector runs on every {} frames (~{:.0f} fps).".format(ball_step, video_fps / ball_step))
+
+    def shot_update(fnum, t, poses):
+        if (fnum - start_frame) % ball_step:
+            return []
+        events = shot_detector.update(
+            (fnum - start_frame) // ball_step, t, poses, tracker,
+            hive_moving=lambda color: hive_detector.is_moving(color, t))
+        for event in events:
+            event.frame_num = start_frame + event.frame_num * ball_step
+        return events
     calibration_completed = H_inv is not None
     tracking_started = H_inv is not None
     while True:
@@ -383,11 +400,11 @@ def process_match(
         if not process_dense and (current_frame_num - start_frame) % frame_step != 0:
             # Robot tracking skips this frame, but balls are followed on every
             # frame: fast vertical shots cross the view in a few frames.
-            if H_inv is not None and last_poses is not None and not tracker.is_glitch_frame(frame):
+            if H_inv is not None and last_poses is not None \
+                    and (current_frame_num - start_frame) % ball_step == 0 \
+                    and not tracker.is_glitch_frame(frame):
                 tracker.ball_mask_only(frame)
-                pending_shot_events.extend(shot_detector.update(
-                    current_frame_num, match_time_s, None, tracker,
-                    hive_moving=lambda color: hive_detector.is_moving(color, match_time_s)))
+                pending_shot_events.extend(shot_update(current_frame_num, match_time_s, None))
             continue
 
         bar.next()
@@ -425,9 +442,7 @@ def process_match(
         last_poses = poses
         if 0.0 <= match_time_s <= season.MATCH_END_S:
             resource_sampler.maybe_sample(frame, match_time_s, tracker)
-        shot_events = pending_shot_events + shot_detector.update(
-            current_frame_num, match_time_s, poses, tracker,
-            hive_moving=lambda color: hive_detector.is_moving(color, match_time_s))
+        shot_events = pending_shot_events + shot_update(current_frame_num, match_time_s, poses)
         pending_shot_events = []
         for tip in tip_events:
             tip_log.append(_tip_row(tip, video_fps))

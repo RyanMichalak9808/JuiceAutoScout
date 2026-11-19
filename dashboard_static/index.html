@@ -11,7 +11,7 @@
     <header class="topbar">
       <div class="brand">
         <div class="brand-logo">
-          <img src="https://juicerobotics.org/assets/dark/logo.png" alt="Project REDACTED">
+          <img src="logo.png" alt="Juice 16236 + 9808">
         </div>
         <div>
           <div class="brand-name">Juice AutoScout Dashboard</div>
@@ -108,6 +108,14 @@
               </div>
               <input id="streamSourceInput" type="text" placeholder="https://www.youtube.com/watch?v=... or D:/streams/event.mp4">
               <button type="button" id="splitStreamButton">Split Stream</button>
+            </div>
+            <div class="queue-card disk-cleanup">
+              <div class="queue-copy">
+                <div class="section-title">Disk Space</div>
+                <div class="job-meta" id="diskUsageMeta">Load an event to see its disk use.</div>
+                <div class="disk-options" id="diskCleanupOptions"></div>
+              </div>
+              <button type="button" id="diskCleanupButton">Free Up Space</button>
             </div>
             <div class="queue-card">
               <div class="queue-copy">

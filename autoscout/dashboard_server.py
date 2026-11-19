@@ -329,6 +329,68 @@ class DashboardState:
                 match["stream_clip"] = {k: clip.get(k) for k in ("start_s", "start_offset", "confidence")}
         result["video_count"] = sum(1 for m in result.get("matches") or [] if m.get("video_url"))
 
+    # Disk cleanup. Only things that can be re-created are offered; tracking
+    # results (CSV / logs / analytics / done.json) are never deleted.
+    CLEANUP_CATEGORIES = (
+        ("stream", "Full stream audio (only needed to split the stream again)"),
+        ("match_videos", "Match videos of finished matches"),
+        ("debug", "Processed overlay videos / frames of finished matches"),
+    )
+
+    def _cleanup_targets(self, event_code: str) -> Dict[str, List[Path]]:
+        event_root = self._event_output_root(str(event_code or "").strip().upper())
+        targets: Dict[str, List[Path]] = {key: [] for key, _label in self.CLEANUP_CATEGORIES}
+        if not event_root.exists():
+            return targets
+        with self.jobs_lock:
+            busy = {Path(job.output_dir).resolve() for job in self.jobs.values()
+                    if job.status in ("queued", "running", "stopping", "awaiting_approval")}
+        targets["stream"] = [p for p in event_root.glob("stream_audio.*") if p.is_file()]
+        for match_dir in sorted(p for p in event_root.iterdir() if p.is_dir()):
+            if match_dir.resolve() in busy or not (match_dir / "done.json").exists():
+                continue
+            targets["match_videos"] += [p for p in (match_dir / "match_video.mp4", match_dir / "match_video.mp4.xz")
+                                        if p.exists()]
+            targets["debug"] += [p for p in (match_dir / "tracker_debug", match_dir / "tracker_debug.mp4",
+                                             match_dir / "tracker_debug.avi") if p.exists()]
+        return targets
+
+    @staticmethod
+    def _path_size(path: Path) -> int:
+        if path.is_dir():
+            return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+        return path.stat().st_size if path.exists() else 0
+
+    def disk_usage(self, event_code: str) -> Dict[str, object]:
+        targets = self._cleanup_targets(event_code)
+        event_root = self._event_output_root(str(event_code or "").strip().upper())
+        return {
+            "event_code": str(event_code or "").strip().upper(),
+            "total_bytes": self._path_size(event_root) if event_root.exists() else 0,
+            "categories": [{"key": key, "label": label, "items": len(targets[key]),
+                            "bytes": sum(self._path_size(p) for p in targets[key])}
+                           for key, label in self.CLEANUP_CATEGORIES],
+        }
+
+    def cleanup_disk(self, event_code: str, categories: List[str]) -> Dict[str, object]:
+        targets = self._cleanup_targets(event_code)
+        freed, removed, errors = 0, 0, []
+        for key in categories or []:
+            for path in targets.get(key, []):
+                try:
+                    size = self._path_size(path)
+                    if path.is_dir():
+                        shutil.rmtree(path)
+                    else:
+                        path.unlink()
+                    freed += size
+                    removed += 1
+                except OSError as exc:
+                    errors.append("{}: {}".format(path.name, exc))
+        result = self.disk_usage(event_code)
+        result.update(freed_bytes=freed, removed=removed, errors=errors)
+        return result
+
     def get_settings(self) -> Dict[str, object]:
         with self.settings_lock:
             return dict(self.settings)
@@ -974,6 +1036,10 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/health":
             self._write_json({"ok": True, "time": time.time()})
             return
+        if path == "/api/event/disk-usage":
+            code = (parse_qs(parsed.query).get("event_code") or [""])[0]
+            self._write_json(self.server.state.disk_usage(code))
+            return
         if path == "/api/event/split-stream":
             code = (parse_qs(parsed.query).get("event_code") or [""])[0]
             self._write_json(self.server.state.get_stream_split(code))
@@ -1094,6 +1160,11 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
 
             if path == "/api/event/split-stream":
                 self._write_json(self.server.state.start_stream_split(body))
+                return
+
+            if path == "/api/event/cleanup":
+                self._write_json(self.server.state.cleanup_disk(
+                    str(body.get("event_code") or ""), list(body.get("categories") or [])))
                 return
 
             if path == "/api/resolve-video-source":

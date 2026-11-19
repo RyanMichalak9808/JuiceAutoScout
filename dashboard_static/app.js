@@ -105,6 +105,9 @@ function bindDom() {
   dom.streamSourceInput = document.getElementById("streamSourceInput");
   dom.splitStreamButton = document.getElementById("splitStreamButton");
   dom.splitStreamStatus = document.getElementById("splitStreamStatus");
+  dom.diskUsageMeta = document.getElementById("diskUsageMeta");
+  dom.diskCleanupOptions = document.getElementById("diskCleanupOptions");
+  dom.diskCleanupButton = document.getElementById("diskCleanupButton");
   dom.globalQueueTitle = document.getElementById("globalQueueTitle");
   dom.globalQueueMeta = document.getElementById("globalQueueMeta");
   dom.globalQueueEstimate = document.getElementById("globalQueueEstimate");
@@ -166,6 +169,7 @@ function bindEvents() {
   dom.eventForm.addEventListener("submit", handleEventLoad);
   dom.reloadEventButton.addEventListener("click", reloadCurrentEvent);
   dom.splitStreamButton.addEventListener("click", splitEventStream);
+  dom.diskCleanupButton.addEventListener("click", cleanupEventDisk);
   dom.globalStartButton.addEventListener("click", toggleGlobalQueue);
   dom.refreshUsageButton.addEventListener("click", loadUsage);
   dom.processBackButton.addEventListener("click", () => setRoute("overview"));
@@ -380,6 +384,7 @@ function showEventWorkspace(eventPayload, persist = true) {
   }
   state.downloadedVideos = [];
   state.storedArtifacts = [];
+  refreshDiskUsage();
   state.eventAssetsRequestId += 1;
   dom.mainNav.classList.remove("hidden");
   dom.brandSubtitle.textContent = `${state.currentEvent.title} • ${state.currentEvent.event_code} • ${state.currentEvent.season}`;
@@ -2333,6 +2338,47 @@ async function splitEventStream() {
     dom.splitStreamStatus.textContent = error.message;
   } finally {
     dom.splitStreamButton.disabled = false;
+  }
+}
+
+function renderDiskUsage(usage) {
+  dom.diskUsageMeta.textContent = `This event uses ${formatBytes(usage.total_bytes)}. Tracking results are always kept.`;
+  dom.diskCleanupOptions.innerHTML = (usage.categories || []).map((c) => `
+    <label class="disk-option">
+      <input type="checkbox" value="${escapeHtmlAttr(c.key)}" ${c.key !== "debug" && c.bytes ? "checked" : ""} ${c.bytes ? "" : "disabled"}>
+      <span class="disk-label">${escapeHtml(c.label)}</span>
+      <span class="disk-size">${formatBytes(c.bytes)}${c.items ? ` · ${c.items}` : ""}</span>
+    </label>`).join("");
+}
+
+async function refreshDiskUsage() {
+  const code = state.currentEvent?.event_code;
+  if (!code) return;
+  try {
+    renderDiskUsage(await fetch(`/api/event/disk-usage?event_code=${encodeURIComponent(code)}`).then((r) => r.json()));
+  } catch (_error) {
+    dom.diskUsageMeta.textContent = "Could not read disk use.";
+  }
+}
+
+async function cleanupEventDisk() {
+  const code = state.currentEvent?.event_code;
+  const categories = [...dom.diskCleanupOptions.querySelectorAll("input:checked")].map((el) => el.value);
+  if (!code || !categories.length) {
+    dom.diskUsageMeta.textContent = "Tick what to delete first.";
+    return;
+  }
+  if (!window.confirm("Delete the ticked files for this event? Matches still processing are skipped.")) return;
+  dom.diskCleanupButton.disabled = true;
+  try {
+    const result = await apiPost("/api/event/cleanup", { event_code: code, categories });
+    renderDiskUsage(result);
+    dom.diskUsageMeta.textContent = `Freed ${formatBytes(result.freed_bytes)}. ` + dom.diskUsageMeta.textContent
+      + (result.errors?.length ? ` ${result.errors.length} file(s) could not be deleted.` : "");
+  } catch (error) {
+    dom.diskUsageMeta.textContent = error.message;
+  } finally {
+    dom.diskCleanupButton.disabled = false;
   }
 }
 

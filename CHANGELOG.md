@@ -441,6 +441,31 @@ On these cameras the field fills most of the picture (the window is 86-90% of th
 - It relies on the field buzzer being audible in the stream. A stream with the field audio muted finds no matches.
 - If the processed clip was deleted after a successful run, processing that match again asks you to split the stream again.
 
+### 13. New logo and disk cleanup (thirteenth commit)
+
+**Logo:** the dashboard header shows the Juice 16236 + 9808 logo.
+- It's stored in the repo as `dashboard_static/logo.png`: cropped, 96 px high, with a transparent background.
+- Before, it loaded from the juicerobotics.org website, so it was missing without internet.
+
+**Disk Space card** (Overview page, under Full Stream):
+- **Shows** how much space the event uses, split into things that can safely be deleted:
+  - **Full stream audio:** only needed to split the stream again.
+  - **Match videos of finished matches:** downloads or stream clips.
+  - **Processed overlay videos / frames of finished matches:** left unticked by default, since this is the tracking video you watch.
+- **Free Up Space** deletes the ticked items after a confirmation.
+- **Always kept:**
+  - tracking results (CSV, logs, analytics, `done.json`);
+  - any match that isn't finished;
+  - any match whose job is queued, running or waiting for approval.
+- **Endpoints:** `GET /api/event/disk-usage` and `POST /api/event/cleanup`.
+
+**Checked** in the browser with test files:
+- a finished match with its video, overlay frames and results;
+- an unfinished match with its video;
+- stream audio.
+
+Cleanup deleted only the ticked stream audio and finished-match video (48 MB), and kept the results, the overlay frames and the unfinished match's video. No page errors, and the layout checked at desktop and phone width.
+
 ## Results on the example videos
 
 | | Original / first version | Now |

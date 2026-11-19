@@ -169,6 +169,9 @@ function bindDom() {
   dom.settingAutoOpen = document.getElementById("settingAutoOpen");
   dom.settingTrackEveryFrame = document.getElementById("settingTrackEveryFrame");
   dom.settingBatchNoApproval = document.getElementById("settingBatchNoApproval");
+  dom.advancedSettingsList = document.getElementById("advancedSettingsList");
+  dom.advancedSummary = document.getElementById("advancedSummary");
+  dom.advancedResetButton = document.getElementById("advancedResetButton");
   dom.settingTrackingRate = document.getElementById("settingTrackingRate");
   dom.settingCropToField = document.getElementById("settingCropToField");
   dom.settingClipLead = document.getElementById("settingClipLead");
@@ -184,6 +187,11 @@ function bindEvents() {
   dom.reloadEventButton.addEventListener("click", reloadCurrentEvent);
   dom.splitStreamButton.addEventListener("click", splitEventStream);
   dom.scoutSortSelect.addEventListener("change", renderScouting);
+  dom.advancedResetButton.addEventListener("click", () => {
+    state.advancedSettings = (state.advancedSettings || []).map((x) => ({ ...x, value: x.default, changed: false }));
+    renderAdvancedSettings();
+    dom.settingsStatus.textContent = "Advanced settings reset to defaults - press Save Settings to apply.";
+  });
   dom.scoutRefreshButton.addEventListener("click", () => loadScouting(true));
   dom.scoutMatchSelect.addEventListener("change", () => { state.scoutMatch = dom.scoutMatchSelect.value; renderScoutMatch(); });
   dom.diskCleanupButton.addEventListener("click", cleanupEventDisk);
@@ -1724,6 +1732,7 @@ function renderSettings() {
   dom.settingCropToField.checked = settings.crop_to_field !== false;
   dom.settingClipLead.value = settings.stream_clip_lead_s ?? 16;
   dom.settingClipTail.value = settings.stream_clip_tail_s ?? 10;
+  if (!state.advancedSettings) void loadAdvancedSettings();
 }
 
 function renderSettingsHardware() {
@@ -1740,10 +1749,63 @@ function renderSettingsHardware() {
   `;
 }
 
+async function loadAdvancedSettings() {
+  try {
+    state.advancedSettings = (await fetch("/api/settings/advanced").then((r) => r.json())).settings || [];
+  } catch (_error) {
+    state.advancedSettings = [];
+  }
+  renderAdvancedSettings();
+}
+
+function advancedValueText(spec, value) {
+  return spec.kind === "json" ? JSON.stringify(value) : String(value ?? "");
+}
+
+function renderAdvancedSettings() {
+  const specs = state.advancedSettings || [];
+  const changed = specs.filter((s) => s.changed).length;
+  dom.advancedSummary.textContent = `(${specs.length} settings${changed ? `, ${changed} changed` : ""})`;
+  let group = null;
+  dom.advancedSettingsList.innerHTML = specs.map((s) => {
+    const head = s.group !== group ? `<h4 class="advanced-group">${escapeHtml(s.group)}</h4>` : "";
+    group = s.group;
+    const id = `adv_${s.key.replace(/\W/g, "_")}`;
+    const input = s.kind === "bool"
+      ? `<input type="checkbox" id="${id}" data-key="${escapeHtmlAttr(s.key)}"${s.value ? " checked" : ""}>`
+      : `<input type="${s.kind === "int" || s.kind === "float" ? "number" : "text"}"${s.kind === "float" ? ' step="any"' : ""}${s.kind === "int" ? ' step="1"' : ""} id="${id}" data-key="${escapeHtmlAttr(s.key)}" value="${escapeHtmlAttr(advancedValueText(s, s.value))}">`;
+    return `${head}<div class="advanced-row${s.changed ? " changed" : ""}">
+      <label for="${id}"><code>${escapeHtml(s.key)}</code></label>${input}
+      <div class="advanced-help">${escapeHtml(s.help || "")} <span class="job-meta">Default: ${escapeHtml(advancedValueText(s, s.default))}</span></div></div>`;
+  }).join("");
+}
+
+function collectAdvancedSettings() {
+  const out = {};
+  for (const s of state.advancedSettings || []) {
+    const el = dom.advancedSettingsList.querySelector(`[data-key="${CSS.escape(s.key)}"]`);
+    if (!el) continue;
+    if (s.kind === "bool") out[s.key] = el.checked;
+    else if (s.kind === "int" || s.kind === "float") out[s.key] = el.value === "" ? null : Number(el.value);
+    else if (s.kind === "json") {
+      try { out[s.key] = JSON.parse(el.value); } catch (_e) { throw new Error(`${s.key}: not valid JSON`); }
+    } else out[s.key] = el.value;
+  }
+  return out;
+}
+
 async function saveSettings(event) {
   event.preventDefault();
+  let advanced;
+  try {
+    advanced = collectAdvancedSettings();
+  } catch (error) {
+    dom.settingsStatus.textContent = error.message;
+    return;
+  }
   try {
     state.settings = await apiPost("/api/settings", {
+      advanced,
       scrape_workers_override: blankToNull(dom.settingScrapeWorkers.value),
       parallel_track_jobs_override: blankToNull(dom.settingParallelJobs.value),
       output_root: dom.settingOutputRoot.value.trim() || "./output_dashboard",
@@ -1761,6 +1823,7 @@ async function saveSettings(event) {
       stream_clip_tail_s: Number(dom.settingClipTail.value || 10),
     });
     dom.settingsStatus.textContent = "Settings saved.";
+    await loadAdvancedSettings();
   } catch (error) {
     dom.settingsStatus.textContent = error.message;
   }

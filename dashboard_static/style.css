@@ -1198,3 +1198,14 @@ label {
 #analyticsView .dashboard-grid > .panel { min-width: 0; }
 #analyticsTable, #analyticsChart { overflow-x: auto; }
 #analyticsView .panel-head { flex-wrap: wrap; gap: 8px; }
+
+.advanced-settings { margin-top: 8px; }
+.advanced-settings summary { cursor: pointer; font-weight: 600; }
+.advanced-group { margin: 14px 0 4px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: #fe8f00; }
+.advanced-row { display: grid; grid-template-columns: minmax(0, 260px) minmax(0, 1fr); gap: 4px 12px; align-items: center; padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.advanced-row code { font-size: 12px; overflow-wrap: anywhere; }
+.advanced-row input[type=checkbox] { width: 18px; height: 18px; justify-self: start; }
+.advanced-row .advanced-help { grid-column: 1 / -1; font-size: 12px; opacity: 0.75; }
+.advanced-row.changed { background: rgba(254,143,0,0.08); }
+.advanced-row.changed code { color: #fe8f00; }
+@media (max-width: 760px) { .advanced-row { grid-template-columns: minmax(0, 1fr); } }

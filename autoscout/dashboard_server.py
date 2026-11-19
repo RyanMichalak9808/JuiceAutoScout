@@ -22,6 +22,7 @@ from autoscout.ftc_events import discover_event_videos
 from autoscout.scouting_stats import compute_team_stats
 from autoscout import stream_split
 from autoscout import scouting_data
+from autoscout import overrides as setting_overrides
 from autoscout.hardware import collect_hardware_profile, collect_runtime_usage
 from autoscout.ytdlp import (
     auth_help_message,
@@ -148,8 +149,12 @@ class DashboardState:
             "crop_to_field": True,
             "stream_clip_lead_s": stream_split.CLIP_PRE_S,
             "stream_clip_tail_s": stream_split.CLIP_POST_S,
+            # every other module-level setting (Settings tab, Advanced):
+            # {"season.PROCESS_ROI": false, ...}, only values changed from default
+            "advanced": {},
         }
         self._load_saved_settings()
+        self._apply_advanced(self.settings.get("advanced") or {})
         self._restore_saved_jobs()
 
     # ── pause / resume across restarts ───────────────────────────────────
@@ -442,13 +447,41 @@ class DashboardState:
             if key in self.settings:
                 self.settings[key] = value
 
+    def _apply_advanced(self, advanced: Dict[str, object]) -> None:
+        """Make the advanced settings take effect: jobs started from now on
+        get them through the environment, and the modules running inside the
+        dashboard (stream splitter, season) are updated right away."""
+        os.environ[setting_overrides.ENV_VAR] = json.dumps(advanced or {})
+        import sys as _sys
+        specs = setting_overrides.discover()
+        for module_name, module_path in (("season", "autoscout.season"), ("stream_split", "autoscout.stream_split"),
+                                         ("field_detect", "autoscout.field_detect")):
+            module = _sys.modules.get(module_path)
+            if module is None:
+                continue
+            values = {s["key"]: s["default"] for s in specs if s["module"] == module_name}
+            values.update({k: v for k, v in (advanced or {}).items() if k.startswith(module_name + ".")})
+            setting_overrides.apply(module_name, vars(module), values)
+
+    def advanced_settings(self) -> Dict[str, object]:
+        current = self.get_settings().get("advanced") or {}
+        return {"settings": [dict(s, value=current.get(s["key"], s["default"]), changed=s["key"] in current)
+                             for s in setting_overrides.discover()]}
+
     def update_settings(self, updates: Dict[str, object]) -> Dict[str, object]:
+        if "advanced" in updates:
+            try:
+                updates = dict(updates, advanced=setting_overrides.validate(updates.get("advanced") or {}))
+            except ValueError as exc:
+                raise RuntimeError("Advanced setting not saved - {}".format(exc))
         allowed_keys = set(self.settings.keys())
         with self.settings_lock:
             for key, value in updates.items():
                 if key in allowed_keys:
                     self.settings[key] = value
             snapshot = dict(self.settings)
+        if "advanced" in updates:
+            self._apply_advanced(snapshot.get("advanced") or {})
         try:
             self._write_json_file(self._settings_path(), snapshot)
         except OSError:
@@ -1111,6 +1144,9 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         path = parsed.path
         if path == "/api/health":
             self._write_json({"ok": True, "time": time.time()})
+            return
+        if path == "/api/settings/advanced":
+            self._write_json(self.server.state.advanced_settings())
             return
         if path == "/api/event/disk-usage":
             code = (parse_qs(parsed.query).get("event_code") or [""])[0]

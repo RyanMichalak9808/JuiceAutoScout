@@ -34,7 +34,7 @@ from typing import Dict, List, Optional, Tuple
 
 from autoscout import season
 
-FIELD_IN = 144.0
+FIELD_IN = 144.0   # field size (inches, square)
 
 
 def _line_from_points(np, pts):
@@ -132,6 +132,10 @@ def _y_on_line(line, x: float) -> float:
 # How far outside the camera view a field corner may be, as a fraction of the
 # larger frame side. Matches the dashboard calibration editor's maximum border.
 CORNER_MAX_OUTSIDE_FRAC = 0.5
+
+# Values changed in the dashboard Settings tab (Advanced) replace the ones above.
+from autoscout.overrides import apply as _apply_overrides  # noqa: E402
+_apply_overrides("field_detect", globals())
 
 class FieldCalibrator:
     N_SAMPLES = 60

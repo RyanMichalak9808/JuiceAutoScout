@@ -453,6 +453,12 @@
                 Clip tail after the match (seconds)
                 <input id="settingClipTail" type="number" min="0" max="120" step="1" value="10">
               </label>
+              <details class="wide advanced-settings" id="advancedSettings">
+                <summary>Advanced: every other setting <span class="job-meta" id="advancedSummary"></span></summary>
+                <p class="helper-copy">All remaining switches from the code (season.py, auto_scout.py, stream splitting, field detection), with the explanation from the code. Changed values are highlighted and apply to matches started after saving. Lists and colors are JSON.</p>
+                <div id="advancedSettingsList"></div>
+                <div class="inline-actions"><button type="button" id="advancedResetButton">Reset all advanced settings to defaults</button></div>
+              </details>
               <div class="inline-actions">
                 <button type="submit" class="primary">Save Settings</button>
               </div>

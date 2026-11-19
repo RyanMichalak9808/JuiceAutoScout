@@ -16,6 +16,7 @@ from autoscout.helpers import (
     _open_debug_video_writer,
 )
 from autoscout import season
+from autoscout.overrides import apply as apply_setting_overrides
 from autoscout.match_timer import scan_match_bounds
 from autoscout.runtime import _make_bar, _require, install_console_output
 from autoscout import analytics
@@ -42,10 +43,11 @@ from util.juice_log import (
 )
 
 
-SAVE_ALL_DEBUG_AROUND_MERGES = False
+SAVE_ALL_DEBUG_AROUND_MERGES = False   # save every debug frame while robots are merged (for debugging label swaps)
 PROCESS_EVERY_SOURCE_FRAME = True
 SHOT_DETECTOR_FPS = 30.0   # frame rate the shot detector's per-frame tuning is for
 DASHBOARD_EVENT_PREFIX = "@@AUTOSCOUT_DASHBOARD@@"
+apply_setting_overrides("auto_scout", globals())   # values changed in the dashboard Settings tab
 
 
 install_console_output()

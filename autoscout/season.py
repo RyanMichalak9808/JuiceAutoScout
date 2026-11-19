@@ -8,8 +8,8 @@ season starts in this one file.
 Current game: BIOBUZZ presented by RTX (2026-2027).
 """
 
-GAME_NAME = "BIOBUZZ"
-SEASON_LABEL = "2026-2027"
+GAME_NAME = "BIOBUZZ"            # game name shown in logs and output
+SEASON_LABEL = "2026-2027"       # season shown in logs and output
 
 # Field image used by the dashboard / data visualizer. It must be oriented the
 # way the camera sees the field: far wall at the top, audience wall at the
@@ -224,3 +224,7 @@ PERSON_MAX_ROBOT_HEIGHTS = 2.6
 # the whole stream. False = process the whole frame.
 PROCESS_ROI = True
 ROI_MARGIN_FRAC = 0.06
+
+# Values changed in the dashboard Settings tab (Advanced) replace the ones above.
+from autoscout.overrides import apply as _apply_overrides  # noqa: E402
+_apply_overrides("season", globals())

@@ -25,21 +25,25 @@ from typing import Callable, Dict, List, Optional, Sequence
 
 import numpy as np
 
-SR = 8000
+SR = 8000                       # audio sample rate used for buzzer detection (Hz)
 HOP = 400                       # 0.05 s analysis step
-NFFT = 1024
+NFFT = 1024                     # FFT window (samples)
 TONE_HZ = (3200.0, 3290.0)      # field buzzer
-REF_HZ = ((2800.0, 3100.0), (3400.0, 3700.0))
+REF_HZ = ((2800.0, 3100.0), (3400.0, 3700.0))   # neighbouring bands the buzzer tone is compared with
 TONE_RATIO = 20.0               # tone bin vs neighbouring bands
 MIN_TONE_S = 1.5                # buzzers last 2-3 s; beeps and speech are shorter
 PAIR_GAP_S = 128.0              # end-of-AUTO -> end-of-match
-PAIR_TOL_S = 1.5
-AUTO_START_BEFORE_BUZZER_S = 29.6
+PAIR_TOL_S = 1.5                # allowed error on the 128 s buzzer gap
+AUTO_START_BEFORE_BUZZER_S = 29.6   # AUTO starts this long before the end-of-AUTO buzzer
 MATCH_LEN_S = 158.0             # 30 AUTO + 8 transition + 120 TELEOP
 CLIP_PRE_S = 16.0               # clip starts this long before AUTO
 CLIP_POST_S = 10.0              # ...and ends this long after the match
 LABEL_TOL_S = 180.0             # schedule times are minute-rounded and drift
-LABEL_SKIP_COST_S = 240.0
+LABEL_SKIP_COST_S = 240.0       # cost of leaving a match unpaired when labeling
+
+# Values changed in the dashboard Settings tab (Advanced) replace the ones above.
+from autoscout.overrides import apply as _apply_overrides  # noqa: E402
+_apply_overrides("stream_split", globals())
 
 
 def _media_duration(path: str) -> float:

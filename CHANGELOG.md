@@ -699,6 +699,34 @@ Click a team to see its matches one by one. Click one of those matches to open i
 - In the browser, ticking it and saving stored `require_calibration_approval: false`.
 - A match started through the dashboard (examples/piper_q11.mp4) went from running straight to completed, never "awaiting approval", in 57 s. The field calibration and preview were saved in its folder.
 
+### 26. Every setting in the Settings tab (twenty-sixth commit)
+
+**What:** every remaining setting is now in the Settings tab, in a collapsed **Advanced: every other setting** section.
+- **62 settings:** all the switches in `season.py` (season, scoring elements, HIVEs, match timing, tracker behavior), plus the ones in `auto_scout.py`, the stream splitter and field detection.
+- **Each setting shows** its name, its current value, the explanation from the code and its default. They're grouped by the section headings in the code, and changed values are highlighted.
+- **Inputs:** a checkbox for on/off switches, a number box for numbers, and JSON for lists and colors.
+- **Reset:** a button puts every advanced setting back to its default.
+- **Already in Settings, so not repeated here:** the dashboard's own settings (all were already in the tab after section 25), crop to field, every-frame tracking and the clip margins.
+- **Left out on purpose:**
+  - the internal tuning constants inside the tracker and shot detector classes (algorithm tuning, not settings);
+  - the CSV column lists and the dashboard/job protocol marker.
+
+**How** (`autoscout/overrides.py`):
+- **Finding settings:** it reads the source files and finds every UPPERCASE module-level setting with a plain value. The comment above it becomes the help text, so a new setting added to one of these files shows up in Settings automatically.
+- **Saving:** only values that differ from the default are saved, as `advanced` in `dashboard_settings.json`, and each is checked against its type. Bad JSON or a missing number is refused with a message naming the setting.
+- **Jobs:** they get the values in the `AUTOSCOUT_OVERRIDES` environment variable. Each module (`season`, `auto_scout`, `stream_split`, `field_detect`) applies them as it loads, so even values the tracker copies at import time (the ball colors) follow them. Types are kept: tuples stay tuples, numbers become the right kind.
+- **Inside the dashboard:** the stream splitter runs in the dashboard itself, so its settings are applied there right away.
+- **Help text:** settings that had no explanation in the code got a one-line comment.
+
+**Checked:**
+- **Overrides in a job's environment** reached season, the tracker's copy of the ball colors, stream_split, field_detect and auto_scout, with the right types.
+- **With nothing changed,** examples/piper_q9.mp4 output (shots, tips, positions, summaries) is byte-identical to before.
+- **Browser:**
+  - all 62 settings were listed;
+  - bad JSON was refused;
+  - changing `season.ROI_MARGIN_FRAC` to 0.2 saved only that value;
+  - the next match started from the dashboard used it: its processing window went from 80% of the frame to the full frame.
+
 ## Results on the example videos
 
 | | Original / first version | Now |

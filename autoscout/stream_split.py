@@ -36,7 +36,8 @@ PAIR_GAP_S = 128.0              # end-of-AUTO -> end-of-match
 PAIR_TOL_S = 1.5
 AUTO_START_BEFORE_BUZZER_S = 29.6
 MATCH_LEN_S = 158.0             # 30 AUTO + 8 transition + 120 TELEOP
-CLIP_PAD_S = 6.0
+CLIP_PRE_S = 16.0               # clip starts this long before AUTO
+CLIP_POST_S = 10.0              # ...and ends this long after the match
 LABEL_TOL_S = 180.0             # schedule times are minute-rounded and drift
 LABEL_SKIP_COST_S = 240.0
 
@@ -277,8 +278,8 @@ def split_stream(source: str, schedule: List[Dict[str, object]], out_root: Path,
             continue
         clip_dir = out_root / slugify(d["label"])
         clip = clip_dir / "match_video.mp4"
-        a = max(0.0, float(d["start_s"]) - CLIP_PAD_S)
-        b = float(d["end_s"]) + CLIP_PAD_S
+        a = max(0.0, float(d["start_s"]) - CLIP_PRE_S)
+        b = float(d["end_s"]) + CLIP_POST_S
         d["clip_path"] = str(clip)
         if not cut:
             d["status"] = "detected"

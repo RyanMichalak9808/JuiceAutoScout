@@ -415,7 +415,7 @@ On these cameras the field fills most of the picture (the window is 86-90% of th
    - The best single offset is found first, then the two lists are lined up in order.
    - Skips are allowed both ways: replays and false hits in the stream, or matches missing from it.
    - The event page scrape now also records each match's start time (`start_time`).
-4. **Clips without re-encoding.** Each match is cut with stream copy from a local file, or downloaded as a yt-dlp section from YouTube (video only up to 720p), with 6 s padding.
+4. **Clips without re-encoding.** Each match is cut with stream copy from a local file, or downloaded as a yt-dlp section from YouTube (video only up to 720p), with 16 s before AUTO and 10 s after the match (see section 14).
    - Stream-copy cuts start at the previous keyframe, so the buzzer is found again in the clip's own audio. This gives the exact AUTO start inside the clip.
    - The clip and its `stream_clip.json` go into the match's output folder.
 5. **Tracking.** When a match is queued, the dashboard uses the clip and passes `--start-offset` from `stream_clip.json`, so the broadcast clock is not used at all. Calibration and approval work as before.
@@ -465,6 +465,19 @@ On these cameras the field fills most of the picture (the window is 86-90% of th
 - stream audio.
 
 Cleanup deleted only the ticked stream audio and finished-match video (48 MB), and kept the results, the overlay frames and the unfinished match's video. No page errors, and the layout checked at desktop and phone width.
+
+### 14. Longer stream clip margins (fourteenth commit)
+
+**Problem:** stream clips started only 6 s before AUTO. A YouTube section download can begin a few seconds after the requested time, so a couple of seconds at the start of the match could be cut off.
+
+**Fix:**
+- Clips now start **16 s before AUTO** (10 s earlier than before) and end **10 s after the match** (was 6 s).
+- The exact AUTO start inside each clip is still found from the clip's own buzzer, so tracking timing is unchanged.
+
+**Checked** on all 18 matches of USMOKSKCWM7 (local stream):
+- AUTO starts 16.2-19.5 s into every clip, found from the clip's own audio.
+- Every clip has a full 10 s after the match end.
+- Each clip is about 185 s.
 
 ## Results on the example videos
 

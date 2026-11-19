@@ -225,7 +225,8 @@ def slugify(text: str) -> str:
 
 def split_stream(source: str, schedule: List[Dict[str, object]], out_root: Path,
                  yt_dlp_cmd: Optional[List[str]] = None, yt_dlp_attempts: Optional[List[List[str]]] = None,
-                 log: Callable[[str], None] = print, cut: bool = True) -> Dict[str, object]:
+                 log: Callable[[str], None] = print, cut: bool = True,
+                 progress: Callable[[float], None] = lambda pct: None) -> Dict[str, object]:
     """source: local video/audio file or a YouTube URL. Writes
     out_root/<slug(label)>/match_video.mp4 + stream_clip.json and
     out_root/stream_split.json. Returns the summary."""
@@ -237,11 +238,24 @@ def split_stream(source: str, schedule: List[Dict[str, object]], out_root: Path,
     def ytdlp(extra: List[str]) -> None:
         last = ""
         for args in attempts:
-            proc = subprocess.run([*yt_dlp_cmd, *args, *extra, source], capture_output=True, text=True)
-            if proc.returncode == 0:
+            progress(0.0)
+            proc = subprocess.Popen([*yt_dlp_cmd, *args, *extra, "--newline",
+                                     "--progress-template", "PCT %(progress._percent_str)s", source],
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            lines = []
+            for line in proc.stdout:
+                line = line.strip()
+                if line.startswith("PCT "):
+                    try:
+                        progress(float(line[4:].strip().rstrip("%")))
+                    except ValueError:
+                        pass
+                elif line:
+                    lines = (lines + [line])[-5:]
+            if proc.wait() == 0:
+                progress(100.0)
                 return
-            last = (proc.stderr or proc.stdout or "").strip().splitlines()[-1:] or [""]
-            last = last[0]
+            last = lines[-1] if lines else ""
         raise RuntimeError("yt-dlp failed: {}".format(last))
 
     if is_url:
@@ -256,6 +270,7 @@ def split_stream(source: str, schedule: List[Dict[str, object]], out_root: Path,
     log("[INFO] Found {} matches in the stream.".format(len(detected)))
     label_matches(detected, schedule)
 
+    labeled = [d for d in detected if d.get("label")]
     for d in detected:
         if not d.get("label"):
             d["status"] = "unlabeled"
@@ -270,7 +285,8 @@ def split_stream(source: str, schedule: List[Dict[str, object]], out_root: Path,
             continue
         clip_dir.mkdir(parents=True, exist_ok=True)
         if not clip.exists():
-            log("[INFO] Cutting {} ({:.0f}s-{:.0f}s)...".format(d["label"], a, b))
+            log("[INFO] {} {} ({} of {})".format("Downloading" if is_url else "Cutting", d["label"],
+                                                  labeled.index(d) + 1, len(labeled)))
             tmp = clip_dir / "match_video.part.mp4"
             if is_url:
                 ytdlp(["-f", "bv*[height<=720]+ba/b[height<=720]/b", "--merge-output-format", "mp4",

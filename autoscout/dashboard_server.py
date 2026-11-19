@@ -272,11 +272,16 @@ class DashboardState:
         current = self.stream_splits.get(event_code)
         if current and current.get("status") == "running":
             return current
-        status = {"event_code": event_code, "source": source, "status": "running", "log": [], "result": None}
+        status = {"event_code": event_code, "source": source, "status": "running", "log": [],
+                  "percent": None, "result": None}
         self.stream_splits[event_code] = status
 
         def log(message: str) -> None:
             status["log"] = (status["log"] + [message])[-30:]
+            status["percent"] = None
+
+        def progress(pct: float) -> None:
+            status["percent"] = round(float(pct), 1)
 
         def run() -> None:
             try:
@@ -289,7 +294,7 @@ class DashboardState:
                     attempts = [a["args"] for a in raw_attempts]
                 status["result"] = stream_split.split_stream(
                     source, schedule, self._event_output_root(event_code),
-                    yt_dlp_cmd=yt_cmd, yt_dlp_attempts=attempts, log=log)
+                    yt_dlp_cmd=yt_cmd, yt_dlp_attempts=attempts, log=log, progress=progress)
                 status["status"] = "done"
                 log("[INFO] Done: {} of {} matches labeled.".format(
                     status["result"]["labeled"], len(status["result"]["matches"])))

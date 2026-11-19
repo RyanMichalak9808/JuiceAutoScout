@@ -1010,8 +1010,11 @@ function renderStageProgress(stage) {
   if (Number.isFinite(fraction)) {
     const pct = clamp(fraction, 0, 1) * 100;
     return `
-      <div class="check-progress" aria-hidden="true">
-        <div class="check-progress-fill" style="width:${pct.toFixed(1)}%"></div>
+      <div class="check-progress-row">
+        <div class="check-progress" aria-hidden="true">
+          <div class="check-progress-fill" style="width:${pct.toFixed(1)}%"></div>
+        </div>
+        <span class="check-progress-pct">${Math.floor(pct)}%</span>
       </div>
     `;
   }
@@ -2314,7 +2317,8 @@ async function splitEventStream() {
     for (;;) {
       const status = await fetch(`/api/event/split-stream?event_code=${encodeURIComponent(event.event_code)}`).then((r) => r.json());
       const last = (status.log || []).slice(-1)[0] || "Working...";
-      dom.splitStreamStatus.textContent = last.replace(/^\[(INFO|ERROR)\]\s*/, "");
+      const pct = status.status === "running" && Number.isFinite(status.percent) ? ` - ${Math.floor(status.percent)}%` : "";
+      dom.splitStreamStatus.textContent = last.replace(/^\[(INFO|ERROR)\]\s*/, "") + pct;
       if (status.status !== "running") {
         if (status.status === "done") {
           const low = status.result?.low_confidence || 0;

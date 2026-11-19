@@ -430,6 +430,11 @@ On these cameras the field fills most of the picture (the window is 86-90% of th
 - **Load Event screen (browser):** stream field filled in, Load Event pressed. The split started by itself, all 18 matches were labeled and queueable, with no page errors.
 - **End to end in the dashboard:** load the event live from FTC Events, split, reload, queue Q9. It ran field calibration on the clip with `--start-offset 9.45` and no download, and reached "awaiting approval" with high confidence.
 
+**Download percentages:**
+- **Process view:** every progress bar now shows its percentage next to it, including "Downloading match footage from YouTube", so you can see a download is really moving.
+- **Split Stream status:** shows the percentage of the current download, e.g. "Downloading Qualification 3 (3 of 18) - 57%", for both the audio and each match section.
+- **Tested** with a stand-in for yt-dlp that prints yt-dlp's progress lines and serves the local stream. The progress came through for every download, and the clips were cut with exact AUTO starts.
+
 **Not tested here:** the YouTube download path, because YouTube blocks downloads from this build environment. It uses the same yt-dlp attempts (and cookies) as the normal match download.
 
 **Limits:**

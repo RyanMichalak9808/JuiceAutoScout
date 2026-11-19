@@ -33,7 +33,9 @@ Most of the work is added code behind switches; apart from the shot detector, li
 
 The original and new versions were timed on the same machine (4 cores), one after the other, without `--debug-video`.
 
-Latest measurement (after the shot detector rewrite), `piper_q9.mp4` (BIOBUZZ, 3 min, 640x360):
+**Update (section 10):** with the processing window, reused buffers and small masks, q9 takes 54.8 s, about 7% faster than the original code (59.0 s). The measurements below are from before that change.
+
+Measurement after the shot detector rewrite, `piper_q9.mp4` (BIOBUZZ, 3 min, 640x360):
 
 | Run | Wall time | CPU time (user + sys) |
 |---|---|---|
@@ -347,6 +349,32 @@ So the current fingerprint stays as it is. Core sampling is kept as a switch, of
 
 **Note:** "Reprocess Match" also reuses the approved calibration. To recalibrate a match, delete its `field_corners.json` first.
 
+### 10. Faster processing: field window, reused buffers, small masks (tenth commit)
+
+**What:**
+- **Processing window:** robot, ball and people detection now run only on a crop around the field and HIVES plus a margin of 6% of the frame width (`season.PROCESS_ROI`, `ROI_MARGIN_FRAC`). The margin keeps people at the walls partly visible so the people filter can still recognize them. The crowd and overlays outside the window are never processed. All masks stay full-frame size (zero outside the window), so the debug videos still show the entire stream.
+- **Reused buffers:** the per-frame work images (background difference, gray, threshold, HSV, ball masks, foreground) are allocated once and reused, with OpenCV writing into them in place.
+- **Background cache:** the background image for each combination of HIVE positions is built once and cached, instead of copied every frame.
+- **Small masks:** each candidate shape's mask (used to split touching robots and measure shape size) is now a small window around that shape, clipped at the picture edge, instead of a full-frame image several times per frame.
+
+**HIVE tip checks:** stay at 10 per second (every robot-tracking frame). A 5-per-second version was tried and dropped: with fewer samples, tip start times drifted by up to a few seconds and a tip right at the buzzer could land after the match end.
+
+**Results (same machine, one run after another):**
+
+| Video | Before | After | Faster by |
+|---|---|---|---|
+| q9 | 84.6 s | 54.8 s | 35% |
+| Shanghai | 88.3 s | 55.8 s | 37% |
+| q11 | ~84 s | 52.7 s | ~37% |
+
+On these cameras the field fills most of the picture (the window is 86-90% of the frame), so most of the gain comes from the reused buffers and small masks. A camera that shows more crowd gains more from the window.
+
+**Checked:**
+- **Identical output:** tips, shots and robot positions are identical to the previous version on all three BIOBUZZ videos, and DECODE is still identical to the original with the window on or off.
+- **A bug found and fixed while checking:** the first version of the small masks padded robots touching the bottom of the picture with a blank border, which changed their centers slightly. The masks are now clipped at the picture edge, which brought Shanghai back to exactly the previous output.
+
+**Processing cost vs the original repo now:** q9 59.0 s originally vs 54.8 s now, so the full BIOBUZZ version with every-frame shot tracking is now about 7% *faster* than the original DECODE code.
+
 ## Results on the example videos
 
 | | Original / first version | Now |
@@ -385,6 +413,7 @@ The switches:
 - `MAX_BLOB_ROBOTS` (set to 0 to turn off)
 - `MERGE_UNSEEN_RELEASE_S` (off by default)
 - `AUTO_FIELD_CALIBRATION`, `FILTER_OFF_FIELD_PEOPLE`, `PERSON_MAX_ROBOT_HEIGHTS`, `GLITCH_FIELD_CHANGED_FRAC`
+- `PROCESS_ROI`, `ROI_MARGIN_FRAC` (processing window; results do not depend on it on the examples)
 
 ## Known limitations
 

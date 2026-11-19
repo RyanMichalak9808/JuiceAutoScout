@@ -216,3 +216,11 @@ GLITCH_FIELD_CHANGED_FRAC = 0.55
 # the field area is taller than this many robot sizes (measured where they
 # touch the floor) are people standing in front of the camera. 0 = off.
 PERSON_MAX_ROBOT_HEIGHTS = 2.6
+
+# Processing window: robot, ball and people detection run only on a crop
+# around the field and HIVES plus ROI_MARGIN_FRAC of the frame width on each
+# side (people at the walls must stay partly visible to be recognized). The
+# crowd and overlays outside are never processed; debug videos still show
+# the whole stream. False = process the whole frame.
+PROCESS_ROI = True
+ROI_MARGIN_FRAC = 0.06

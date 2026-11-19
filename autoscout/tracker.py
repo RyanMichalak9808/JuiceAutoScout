@@ -46,6 +46,7 @@ class RobotTracker:
     LOCAL_SCALE_MAX_FRAC = 3.0
     # BLOB_MIN shrinks for far robots, but never below this fraction of it.
     BLOB_MIN_SCALE_FLOOR = 0.2
+    LOCAL_MASK_PAD = 8           # padding of per-contour masks (> erosion radius)
     # Floor-contact positions up to this far outside the field are clamped
     # onto the edge instead of being dropped (only with FOOT_OFFSET_FRAC > 0).
     FIELD_EDGE_TOL_IN = 14.0
@@ -112,6 +113,9 @@ class RobotTracker:
         self.hive_boxes: Dict[str, object] = {}   # color -> int32 polygon (N,1,2)
         self.exclude_polys: List[object] = []
         self.flower_polys: List[object] = []
+        self._roi = None
+        self._bufs = {}
+        self._bg_cache = {}
         self._allowed_mask = None
         self._person_mask = None
         self._init_wait_frames = 0
@@ -229,6 +233,28 @@ class RobotTracker:
         for ex in self.exclude_polys:
             cv2.fillPoly(shot_region, [ex], 0)
         self._shot_region_mask = shot_region
+
+        # Processing window: robot, ball and people detection only look at
+        # the field and HIVE area plus a margin (people at the walls must
+        # stay partly visible to be recognized). The crowd and overlays
+        # outside it are never processed. Masks stay full-frame size (zero
+        # outside the window), so debug output still shows the whole stream.
+        if season.PROCESS_ROI:
+            area = cv2.bitwise_or(self._field_mask, shot_region)
+            ys, xs = np.nonzero(area)
+            m = int(round(season.ROI_MARGIN_FRAC * w))
+            if len(xs):
+                self._roi = (max(0, int(xs.min()) - m), max(0, int(ys.min()) - m),
+                             min(w, int(xs.max()) + 1 + m), min(h, int(ys.max()) + 1 + m))
+            else:
+                self._roi = (0, 0, w, h)
+        else:
+            self._roi = (0, 0, w, h)
+        self._bufs = {}
+        self._bg_cache = {}
+        rx0, ry0, rx1, ry1 = self._roi
+        print("[INFO] Processing window: x {}-{}, y {}-{} ({:.0f}% of the frame).".format(
+            rx0, rx1, ry0, ry1, 100.0 * (rx1 - rx0) * (ry1 - ry0) / (w * h)))
 
         # "Allowed" area for things standing on the field: the floor quad,
         # extended upward without limit (robots at the back wall stick out
@@ -363,16 +389,27 @@ class RobotTracker:
         otherwise the box is removed from robot detection."""
         if not self._hive_bg or self._field_mask_open is None:
             return self._bg, self._field_mask
-        bg = None
-        mask = self._field_mask_open
-        for color, poly in self.hive_boxes.items():
+        # which background patch each HIVE uses this frame (None = masked)
+        choice = []
+        for color in self.hive_boxes:
             info = self._hive_bg.get(color)
             level, moving = self._hive_state.get(color, (None, True))
-            patch = None
+            pick = None
             if info is not None and level is not None and not moving:
-                center, best = min(info["states"], key=lambda st: abs(level - st[0]))
-                if abs(level - center) <= 0.05:
-                    patch = best
+                k = min(range(len(info["states"])), key=lambda i: abs(level - info["states"][i][0]))
+                if abs(level - info["states"][k][0]) <= 0.05:
+                    pick = k
+            choice.append((color, pick))
+        key = tuple(choice)
+        cached = self._bg_cache.get(key)
+        if cached is not None:
+            return cached
+        bg = None
+        mask = self._field_mask_open
+        for color, pick in choice:
+            poly = self.hive_boxes[color]
+            info = self._hive_bg.get(color)
+            patch = info["states"][pick][1] if pick is not None else None
             if patch is None:
                 if mask is self._field_mask_open:
                     mask = mask.copy()
@@ -382,7 +419,9 @@ class RobotTracker:
                 bg = self._bg.copy()
             x0, y0, x1, y1 = info["box"]
             bg[y0:y1, x0:x1] = patch
-        return (bg if bg is not None else self._bg), mask
+        result = ((bg if bg is not None else self._bg), mask)
+        self._bg_cache[key] = result      # only a few HIVE state combinations
+        return result
 
     # ── perspective helpers ───────────────────────────────────────────────
 
@@ -1587,38 +1626,67 @@ class RobotTracker:
 
     def _foreground_mask(self, frame):
         cv2, np = self.cv2, self.np
-        bg, field_mask = self._background_and_mask()
-        diff = cv2.absdiff(frame, bg)
-        gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
-        _, fg = cv2.threshold(gray, self.FG_THRESH, 255, cv2.THRESH_BINARY)
-        self._person_mask = self._off_field_people(fg)
-        if self._person_mask is not None:
-            fg = cv2.bitwise_and(fg, cv2.bitwise_not(self._person_mask))
-        fg = cv2.bitwise_and(fg, field_mask)
-        fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, self._kern)
-        fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN,  self._kern)
+        bg_full, mask_full = self._background_and_mask()
+        ry, rx = self._roi_slices()
+        f = frame[ry, rx]
+        bg = bg_full[ry, rx]
+        field_mask = mask_full[ry, rx]
+        diff = cv2.absdiff(f, bg, dst=self._buf("diff3", f.shape))
+        gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY, dst=self._buf("gray", f.shape[:2]))
+        fg = self._buf("fg", f.shape[:2])
+        cv2.threshold(gray, self.FG_THRESH, 255, cv2.THRESH_BINARY, dst=fg)
+        person = self._off_field_people(fg)
+        if person is not None:
+            person_full = self._buf("person_full", mask_full.shape)
+            person_full[ry, rx] = person
+            self._person_mask = person_full
+            cv2.bitwise_and(fg, cv2.bitwise_not(person), dst=fg)
+        else:
+            self._person_mask = None
+        cv2.bitwise_and(fg, field_mask, dst=fg)
+        cv2.morphologyEx(fg, cv2.MORPH_CLOSE, self._kern, dst=fg)
+        cv2.morphologyEx(fg, cv2.MORPH_OPEN, self._kern, dst=fg)
         vclose = season.FG_VERTICAL_CLOSE_PX
         if vclose and vclose > 1:
-            k = max(2, int(round(vclose * fg.shape[1] / 640.0)))
-            fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE,
-                                  cv2.getStructuringElement(cv2.MORPH_RECT, (1, k)))
+            k = max(2, int(round(vclose * frame.shape[1] / 640.0)))
+            cv2.morphologyEx(fg, cv2.MORPH_CLOSE,
+                             cv2.getStructuringElement(cv2.MORPH_RECT, (1, k)), dst=fg)
         if self._front_band is not None:
-            k = max(2, int(round(season.FRONT_RAIL_CLOSE_PX * fg.shape[1] / 640.0)))
+            k = max(2, int(round(season.FRONT_RAIL_CLOSE_PX * frame.shape[1] / 640.0)))
             closed = cv2.morphologyEx(fg, cv2.MORPH_CLOSE,
-                                      cv2.getStructuringElement(cv2.MORPH_RECT, (1, k)))
-            fg = np.where(self._front_band > 0, closed, fg).astype(np.uint8)
-            fg = cv2.bitwise_and(fg, field_mask)
+                                      cv2.getStructuringElement(cv2.MORPH_RECT, (1, k)),
+                                      dst=self._buf("fg_closed", fg.shape))
+            band = self._front_band[ry, rx] > 0
+            fg[band] = closed[band]
+            cv2.bitwise_and(fg, field_mask, dst=fg)
 
         if self._neck_kern is not None:
-            fg = cv2.erode(fg,  self._neck_kern)
-            fg = cv2.dilate(fg, self._neck_kern)
+            cv2.erode(fg, self._neck_kern, dst=fg)
+            cv2.dilate(fg, self._neck_kern, dst=fg)
 
-        ball_mask = self._ball_color_mask(frame, gray)
-        if ball_mask is not None:
-            fg = cv2.bitwise_and(fg, cv2.bitwise_not(ball_mask))
+        ball_crop = self._ball_color_mask(frame, gray)
+        if ball_crop is not None:
+            cv2.bitwise_and(fg, cv2.bitwise_not(ball_crop), dst=fg)
 
-        self._last_fg = fg
-        return fg
+        fg_full = self._buf("fg_full", mask_full.shape)
+        fg_full[ry, rx] = fg
+        self._last_fg = fg_full
+        return fg_full
+
+    def _buf(self, name, shape, dtype=None):
+        """Reusable work buffer (allocated once per name / shape)."""
+        np = self.np
+        dtype = dtype or np.uint8
+        key = (name, tuple(shape), np.dtype(dtype).str)
+        buf = self._bufs.get(key)
+        if buf is None:
+            buf = np.zeros(shape, dtype=dtype)
+            self._bufs[key] = buf
+        return buf
+
+    def _roi_slices(self):
+        x0, y0, x1, y1 = self._roi
+        return slice(y0, y1), slice(x0, x1)
 
     def _off_field_people(self, raw_fg):
         """Mask of foreground blobs that are mostly outside the field walls
@@ -1626,6 +1694,9 @@ class RobotTracker:
         of them that overlap the field in the image."""
         if not season.FILTER_OFF_FIELD_PEOPLE or getattr(self, "_allowed_mask", None) is None:
             return None
+        ry, rx = self._roi_slices()
+        ox, oy = self._roi[0], self._roi[1]
+        allowed_win = self._allowed_mask[ry, rx]
         cv2, np = self.cv2, self.np
         k = max(3, int(round(raw_fg.shape[1] / 128.0)) | 1)
         blobs = cv2.morphologyEx(raw_fg, cv2.MORPH_CLOSE,
@@ -1633,7 +1704,7 @@ class RobotTracker:
         n, labels, stats, _ = cv2.connectedComponentsWithStats(blobs)
         if n <= 1:
             return None
-        outside = cv2.bitwise_and(blobs, cv2.bitwise_not(self._allowed_mask))
+        outside = cv2.bitwise_and(blobs, cv2.bitwise_not(allowed_win))
         out_counts = np.bincount(labels[outside > 0], minlength=n)
         robot_area = max(self._robot_max_px * self._robot_max_px * self._single_area_ratio, 1.0)
         person_ids = [
@@ -1653,16 +1724,16 @@ class RobotTracker:
                 # height of the part of the blob inside the field area: a
                 # robot is at most about one robot size tall there, a person
                 # standing in front of the camera much more
-                comp_in = (labels[y:y + bh, x:x + bw] == i) & (self._allowed_mask[y:y + bh, x:x + bw] > 0)
+                comp_in = (labels[y:y + bh, x:x + bw] == i) & (allowed_win[y:y + bh, x:x + bw] > 0)
                 rows = np.nonzero(comp_in.any(axis=1))[0]
                 if len(rows) == 0:
                     continue
                 in_h = rows[-1] - rows[0] + 1
                 # only people standing in front of the camera: they reach the
                 # bottom of the usable picture
-                if y + rows[-1] < self._usable_bottom - 6:
+                if y + oy + rows[-1] < self._usable_bottom - 6:
                     continue
-                local = self._robot_px_at(x + bw / 2.0, y + rows[-1])
+                local = self._robot_px_at(x + ox + bw / 2.0, y + oy + rows[-1])
                 if in_h > season.PERSON_MAX_ROBOT_HEIGHTS * local:
                     tall_ids.append(i)
             for i in tall_ids:
@@ -1672,12 +1743,12 @@ class RobotTracker:
         for i in person_ids:
             x, y, bw, bh = stats[i, :4]
             comp = labels[y:y + bh, x:x + bw] == i
-            if y + bh - 1 >= self._usable_bottom - 6:
+            if y + oy + bh - 1 >= self._usable_bottom - 6:
                 # a person standing at the front edge, reaching the bottom of
                 # the picture: all of them (legs over the field included)
                 mask[y:y + bh, x:x + bw][comp] = 255
                 continue
-            out = comp & (self._allowed_mask[y:y + bh, x:x + bw] == 0)
+            out = comp & (allowed_win[y:y + bh, x:x + bw] == 0)
             # Inside the field, only the part of the person directly ABOVE
             # where they stand outside it (a referee in front of the camera)
             # is removed. Things beside the crowd at the side walls - usually
@@ -1728,77 +1799,90 @@ class RobotTracker:
 
     def _ball_color_mask(self, frame, diff_gray=None, shot_only: bool = False):
         """
-        Builds two masks from the scoring-element colors (season.py):
+        Builds two masks from the scoring-element colors (season.py), inside
+        the processing window:
 
-        - returned / _last_ball_suppress_mask: ball-colored pixels on the
-          field (moving or not), cleaned and dilated; removed from the robot
-          foreground so game pieces are not mistaken for robots.
-        - _last_ball_mask: ball-colored pixels that also differ from the
-          background (i.e. moving or newly placed), inside the shot region
-          (field + space above the far wall around the scoring targets).
-          Used by the shot detector. Only lightly cleaned so small, distant
-          balls survive.
+        - _last_ball_suppress_mask (full frame; the window crop is returned):
+          ball-colored pixels on the field (moving or not), cleaned and
+          dilated; removed from the robot foreground so game pieces are not
+          mistaken for robots.
+        - _last_ball_mask (full frame): ball-colored pixels that also differ
+          from the background (moving or newly placed), inside the shot
+          region (field + space above the far wall around the HIVES), minus
+          people and FLOWER boxes. Used by the shot detector.
+
+        diff_gray, when given, is the window crop of the background
+        difference computed by _foreground_mask.
         """
-        if not self.BALL_FILTER_ENABLED or self._field_mask is None:
+        if not self.BALL_FILTER_ENABLED or self._field_mask is None or not self.BALL_HSV_RANGES:
             self._last_ball_mask = None
             self._last_ball_suppress_mask = None
             return None
 
         cv2, np = self.cv2, self.np
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        color = None
-        for lo, hi in self.BALL_HSV_RANGES:
-            part = cv2.inRange(hsv, np.array(lo, dtype=np.uint8), np.array(hi, dtype=np.uint8))
-            color = part if color is None else cv2.bitwise_or(color, part)
-        if color is None:
-            self._last_ball_mask = None
-            self._last_ball_suppress_mask = None
-            return None
+        ry, rx = self._roi_slices()
+        f = frame[ry, rx]
+        hsv = cv2.cvtColor(f, cv2.COLOR_BGR2HSV, dst=self._buf("hsv", f.shape))
+        color = self._buf("ball_color", f.shape[:2])
+        part = self._buf("ball_part", f.shape[:2])
+        for i, (lo, hi) in enumerate(self.BALL_HSV_RANGES):
+            target = color if i == 0 else part
+            cv2.inRange(hsv, np.array(lo, dtype=np.uint8), np.array(hi, dtype=np.uint8), dst=target)
+            if i > 0:
+                cv2.bitwise_or(color, part, dst=color)
 
         # Moving-ball mask for shot detection.
         if diff_gray is None:
             bg_now, _mask = self._background_and_mask()
-            diff_gray = cv2.cvtColor(cv2.absdiff(frame, bg_now), cv2.COLOR_BGR2GRAY)
-        _, moving = cv2.threshold(diff_gray, self.BALL_MOTION_THRESH, 255, cv2.THRESH_BINARY)
-        shot = cv2.bitwise_and(color, moving)
+            diff3 = cv2.absdiff(f, bg_now[ry, rx], dst=self._buf("ball_diff3", f.shape))
+            diff_gray = cv2.cvtColor(diff3, cv2.COLOR_BGR2GRAY, dst=self._buf("ball_gray", f.shape[:2]))
+        shot = self._buf("ball_shot", f.shape[:2])
+        cv2.threshold(diff_gray, self.BALL_MOTION_THRESH, 255, cv2.THRESH_BINARY, dst=shot)
+        cv2.bitwise_and(shot, color, dst=shot)
         region = self._shot_region_mask if self._shot_region_mask is not None else self._field_mask
-        shot = cv2.bitwise_and(shot, region)
+        cv2.bitwise_and(shot, region[ry, rx], dst=shot)
         person = getattr(self, "_person_mask", None)
         if person is not None:
-            shot = cv2.bitwise_and(shot, cv2.bitwise_not(person))
+            cv2.bitwise_and(shot, cv2.bitwise_not(person[ry, rx]), dst=shot)
         if self.BALL_SHOT_CLOSE_PX and self.BALL_SHOT_CLOSE_PX > 1:
             k = cv2.getStructuringElement(
                 cv2.MORPH_ELLIPSE, (self.BALL_SHOT_CLOSE_PX, self.BALL_SHOT_CLOSE_PX))
-            shot = cv2.morphologyEx(shot, cv2.MORPH_CLOSE, k)
-        self._last_ball_mask = shot
+            cv2.morphologyEx(shot, cv2.MORPH_CLOSE, k, dst=shot)
+        shot_full = self._buf("ball_shot_full", frame.shape[:2])
+        shot_full[ry, rx] = shot
+        self._last_ball_mask = shot_full
         if shot_only:
             return None
 
         # Suppression mask for robot segmentation.
-        mask = cv2.bitwise_and(color, self._field_mask)
-
+        mask = cv2.bitwise_and(color, self._field_mask[ry, rx], dst=self._buf("ball_supp", f.shape[:2]))
         open_kern = self._scaled_odd_kernel(self.BALL_MASK_OPEN_FRAC, 3)
         close_kern = self._scaled_odd_kernel(self.BALL_MASK_CLOSE_FRAC, 3)
         dilate_kern = self._scaled_odd_kernel(self.BALL_MASK_DILATE_FRAC, 3)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, open_kern)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, close_kern)
-        mask = self._filter_contours_by_field_area(mask, self.BALL_MIN_FIELD_AREA_IN2)
-        mask = cv2.dilate(mask, dilate_kern)
-        self._last_ball_suppress_mask = mask
+        cv2.morphologyEx(mask, cv2.MORPH_OPEN, open_kern, dst=mask)
+        cv2.morphologyEx(mask, cv2.MORPH_CLOSE, close_kern, dst=mask)
+        mask = self._filter_contours_by_field_area(mask, self.BALL_MIN_FIELD_AREA_IN2,
+                                                   offset=(self._roi[0], self._roi[1]))
+        mask = cv2.dilate(mask, dilate_kern, dst=self._buf("ball_supp_dil", f.shape[:2]))
+        supp_full = self._buf("ball_supp_full", frame.shape[:2])
+        supp_full[ry, rx] = mask
+        self._last_ball_suppress_mask = supp_full
         return mask
 
-    def _filter_contours_by_field_area(self, mask, min_area_in2: float):
+    def _filter_contours_by_field_area(self, mask, min_area_in2: float, offset=(0, 0)):
+        """mask may be a crop of the frame starting at `offset` (x, y)."""
         cv2, np = self.cv2, self.np
         if self._H_2d is None or min_area_in2 <= 0:
             return mask
-
-        cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        kept = np.zeros_like(mask)
+        ox, oy = offset
+        cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE, offset=(ox, oy))
+        kept = self._buf("filter_kept", mask.shape)
+        kept[:] = 0
         for c in cnts:
             if len(c) < 3:
                 continue
             if self._contour_field_area_in2(c) >= min_area_in2:
-                cv2.drawContours(kept, [c], -1, 255, -1)
+                cv2.drawContours(kept, [c], -1, 255, -1, offset=(-ox, -oy))
         return kept
 
     def _contour_field_area_in2(self, contour) -> float:
@@ -1837,11 +1921,25 @@ class RobotTracker:
         all_split.sort(key=lambda x: -x[2])
         return valid, [(int(sx), int(sy)) for sx, sy, _ in all_split]
 
+    def _local_contour_mask(self, contour):
+        """Filled mask of one contour in a small window around it (instead of
+        a full-frame mask): returns (mask, x_offset, y_offset). The padding,
+        clipped at the picture edge, keeps distance transforms and erosions
+        identical to the full frame."""
+        cv2, np = self.cv2, self.np
+        pad = self.LOCAL_MASK_PAD
+        H, W = self._field_mask.shape[:2]
+        x, y, w, h = cv2.boundingRect(contour)
+        # the window stops at the picture edge, exactly like a full-frame mask
+        x0, y0 = max(0, x - pad), max(0, y - pad)
+        x1, y1 = min(W, x + w + pad), min(H, y + h + pad)
+        mask = np.zeros((y1 - y0, x1 - x0), dtype=np.uint8)
+        cv2.drawContours(mask, [contour], -1, 255, -1, offset=(-x0, -y0))
+        return mask, x0, y0
+
     def _split_contour(self, contour):
         cv2, np = self.cv2, self.np
-        h, w = self._field_mask.shape[:2]
-        mask = np.zeros((h, w), dtype=np.uint8)
-        cv2.drawContours(mask, [contour], -1, 255, -1)
+        mask, ox, oy = self._local_contour_mask(contour)
         dist = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
         if dist.max() == 0:
             return []
@@ -1855,11 +1953,11 @@ class RobotTracker:
             comp = (labels == lbl).astype(np.uint8)
             M = cv2.moments(comp)
             if M["m00"] > 0:
-                centers.append((M["m10"] / M["m00"], M["m01"] / M["m00"]))
+                centers.append((M["m10"] / M["m00"] + ox, M["m01"] / M["m00"] + oy))
         area = float(cv2.contourArea(contour))
         expected = self._expected_robot_count(area, contour)
         if len(centers) < expected:
-            retry = self._split_contour_relaxed(mask, dist, expected)
+            retry = [(cx + ox, cy + oy) for cx, cy in self._split_contour_relaxed(mask, dist, expected)]
             if len(retry) > len(centers):
                 centers = retry
         return centers
@@ -1945,8 +2043,7 @@ class RobotTracker:
                 rpx = self._contour_robot_px(c)
                 if area > season.MAX_BLOB_ROBOTS * rpx * rpx * self._single_area_ratio:
                     continue   # person in front of the camera, not robots
-            _bm = np.zeros(self._field_mask.shape, dtype=np.uint8)
-            cv2.drawContours(_bm, [c], -1, 255, -1)
+            _bm, _ox, _oy = self._local_contour_mask(c)
             _dr = cv2.distanceTransform(_bm, cv2.DIST_L2, 5)
             if _dr.max() < self.MIN_RADIUS_PX:
                 continue

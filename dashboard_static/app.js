@@ -168,6 +168,7 @@ function bindDom() {
   dom.settingDebugVideo = document.getElementById("settingDebugVideo");
   dom.settingAutoOpen = document.getElementById("settingAutoOpen");
   dom.settingTrackEveryFrame = document.getElementById("settingTrackEveryFrame");
+  dom.settingBatchNoApproval = document.getElementById("settingBatchNoApproval");
   dom.settingTrackingRate = document.getElementById("settingTrackingRate");
   dom.settingCropToField = document.getElementById("settingCropToField");
   dom.settingClipLead = document.getElementById("settingClipLead");
@@ -1718,6 +1719,7 @@ function renderSettings() {
   dom.settingDebugVideo.checked = Boolean(settings.default_debug_video);
   dom.settingAutoOpen.checked = Boolean(settings.auto_open_process_view);
   dom.settingTrackEveryFrame.checked = settings.track_every_frame !== false;
+  dom.settingBatchNoApproval.checked = settings.require_calibration_approval === false;
   dom.settingTrackingRate.value = settings.tracking_sample_rate ?? 10;
   dom.settingCropToField.checked = settings.crop_to_field !== false;
   dom.settingClipLead.value = settings.stream_clip_lead_s ?? 16;
@@ -1752,6 +1754,7 @@ async function saveSettings(event) {
       default_debug_video: dom.settingDebugVideo.checked,
       auto_open_process_view: dom.settingAutoOpen.checked,
       track_every_frame: dom.settingTrackEveryFrame.checked,
+      require_calibration_approval: !dom.settingBatchNoApproval.checked,
       tracking_sample_rate: Number(dom.settingTrackingRate.value || 10),
       crop_to_field: dom.settingCropToField.checked,
       stream_clip_lead_s: Number(dom.settingClipLead.value || 16),

@@ -429,6 +429,10 @@
               </label>
               <div class="section-title wide settings-group">Tracking</div>
               <label class="checkbox wide">
+                <input id="settingBatchNoApproval" type="checkbox">
+                Batch mode: process matches without approving the automatic field calibration. Each match detects the field and goes straight to tracking (no stop at "Needs Approval"). The detected calibration is still saved in the match folder (field_corners_auto.json + preview image) to check later; if detection fails, the tracker falls back to finding the field frame by frame.
+              </label>
+              <label class="checkbox wide">
                 <input id="settingTrackEveryFrame" type="checkbox">
                 Track robots on every video frame (slower). When ticked, the tracking rate below is ignored and robots are tracked at the video's own frame rate (30 or 60 per second). Balls and touching robots are always followed on every frame.
               </label>

@@ -683,6 +683,22 @@ Click a team to see its matches one by one. Click one of those matches to open i
 - no page errors, and the page fits at 420 px width.
 - **Limit of the guess:** in Q9, three robots shot mostly into the red HIVE, so one guessed mapping was wrong. That's what the confirm step is for.
 
+### 25. Batch mode: no calibration approval (twenty-fifth commit)
+
+**What:** a new Settings switch: **Batch mode: process matches without approving the automatic field calibration**. Off by default.
+
+**When it's on:**
+- Each match detects the field and goes straight to tracking in one run, with no stop at "Needs Approval". A whole event can then run unattended through the global queue.
+- **The calibration is still saved** in the match folder (`field_corners_auto.json` and `field_corners_auto_preview.jpg`), so it can be checked afterwards.
+- **If detection fails,** the tracker falls back to finding the field frame by frame. This is less accurate, so check those matches.
+- **Matches with an approved calibration** keep using it.
+
+**How:** the server already had a `require_calibration_approval` setting that the Settings tab never showed. The switch sets it, and it's saved in `dashboard_settings.json` like the other settings.
+
+**Checked:**
+- In the browser, ticking it and saving stored `require_calibration_approval: false`.
+- A match started through the dashboard (examples/piper_q11.mp4) went from running straight to completed, never "awaiting approval", in 57 s. The field calibration and preview were saved in its folder.
+
 ## Results on the example videos
 
 | | Original / first version | Now |

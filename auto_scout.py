@@ -199,6 +199,10 @@ def process_match(
         frame_step = 1
     print("[INFO] Processing every {} frames (~{:.1f} fps output)".format(
         frame_step, video_fps / frame_step))
+    # Debug frames are drawn on tracked frames only, so the debug cadence is a
+    # whole number of tracking steps; the debug video is written at the
+    # matching rate and plays back in real time at any tracking rate.
+    debug_every_n = frame_step * int(math.ceil(max(1, int(debug_every_n)) / frame_step))
     _emit_dashboard_stage("Loading Match Footage", "completed", "Match footage is ready")
     _emit_dashboard_stage("Calibrating Trackers", "in_progress", "Preparing tracker calibration")
     if debug:

@@ -727,6 +727,27 @@ Click a team to see its matches one by one. Click one of those matches to open i
   - changing `season.ROI_MARGIN_FRAC` to 0.2 saved only that value;
   - the next match started from the dashboard used it: its processing window went from 80% of the frame to the full frame.
 
+### 27. Debug video plays at the tracking rate (twenty-seventh commit)
+
+**Bug:** with "Track robots on every video frame" off, `tracker_debug.mp4` played too fast and at an uneven speed.
+- Debug frames are only drawn on frames the tracker processes (10 per second by default). The video file, though, was written at the source frame rate divided by the debug cadence (30 fps for a 30 fps clip).
+- When robots touch, tracking switches to every frame, so those stretches played at yet another speed.
+- On examples/piper_q9.mp4 (180 s), the debug video was only 107 s long.
+
+**Fix:**
+- The debug cadence is rounded up to a whole number of tracking steps. At 10 per second on 30 fps video, that's every 3rd source frame, including while robots touch.
+- The debug video is written at the matching rate (`[mp4v @ 10.00 fps]` in the log), so it plays back in real time at any tracking rate.
+- With every-frame tracking, nothing changes.
+
+**Checked** on examples/piper_q9.mp4:
+
+| Tracking | Debug video before | Debug video now |
+|---|---|---|
+| 10 per second | 30 fps, 3223 frames, 107 s | 10 fps, 1800 frames, 180.0 s |
+| every frame | 30 fps, 5395 frames, 179.8 s | unchanged |
+
+Tracking results (shots, tips, positions) are byte-identical to before.
+
 ## Results on the example videos
 
 | | Original / first version | Now |

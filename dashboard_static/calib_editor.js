@@ -23,6 +23,10 @@
     exclude: { stroke: "#b0b0b0", label: "ignore", fill: "rgba(40,40,40,0.45)" },
   };
 
+  // How far outside the video frame a field corner may be (fraction of the
+  // larger frame side); same limit as automatic detection on the server.
+  const MAX_OUTSIDE_FRAC = 0.5;
+
   function rectFromPoly(poly) {
     const xs = poly.map((p) => p[0]);
     const ys = poly.map((p) => p[1]);
@@ -63,8 +67,27 @@
       });
     }
 
+    // Border drawn around the video frame. It grows to show every field
+    // corner (corners can be outside the view), up to MAX_OUTSIDE_FRAC.
     get margin() {
-      return Math.round(Math.max(this.width, this.height) * this.marginFrac);
+      const side = Math.max(this.width, this.height);
+      let need = side * this.marginFrac;
+      for (const c of this.corners) {
+        need = Math.max(need, -c.x, -c.y, c.x - this.width, c.y - this.height);
+      }
+      // + a small strip so a corner on the limit is still drawn in full
+      return Math.round(Math.min(need, side * MAX_OUTSIDE_FRAC) + 0.04 * side);
+    }
+
+    // Keep every corner inside the largest border, so it can always be seen
+    // and dragged.
+    _boundCorners() {
+      if (!this.width) return;
+      const lim = Math.max(this.width, this.height) * MAX_OUTSIDE_FRAC;
+      for (const c of this.corners) {
+        c.x = Math.max(-lim, Math.min(this.width + lim, c.x));
+        c.y = Math.max(-lim, Math.min(this.height + lim, c.y));
+      }
     }
 
     setSource(source, width, height) {
@@ -75,6 +98,7 @@
       if (firstImage && !this.corners.length) {
         this.corners = this._defaultCorners();
       }
+      this._boundCorners();
       this.render();
     }
 
@@ -121,6 +145,7 @@
         this.boxes.push({ kind: "exclude", ...rectFromPoly(poly) });
       }
       this.selected = -1;
+      this._boundCorners();
       this.render();
     }
 
@@ -216,7 +241,8 @@
     _move(event) {
       if (!this.drag) return;
       const p = this._toImage(event);
-      const lim = (v, size) => Math.max(-this.margin, Math.min(size + this.margin, v));
+      const edge = Math.max(this.width, this.height) * MAX_OUTSIDE_FRAC;
+      const lim = (v, size) => Math.max(-edge, Math.min(size + edge, v));
       if (this.drag.type === "corner") {
         const c = this.corners[this.drag.index];
         c.x = lim(p.x, this.width);

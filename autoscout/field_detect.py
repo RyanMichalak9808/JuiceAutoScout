@@ -128,6 +128,11 @@ def _y_on_line(line, x: float) -> float:
     return float(p[1] + t * d[1])
 
 
+
+# How far outside the camera view a field corner may be, as a fraction of the
+# larger frame side. Matches the dashboard calibration editor's maximum border.
+CORNER_MAX_OUTSIDE_FRAC = 0.5
+
 class FieldCalibrator:
     N_SAMPLES = 60
     WALL_HEIGHT_IN = 12.0          # FTC perimeter wall height (fallback)
@@ -172,6 +177,21 @@ class FieldCalibrator:
         if corners is None:
             return None
         tl, tr, br, bl = corners["corners"]
+        # Corners may lie outside the view (floor-level corners below a low
+        # camera), but never further out than the dashboard editor can show,
+        # so they can always be checked and dragged. Further out than that
+        # means a bad detection: clamp and mark it for checking.
+        fh, fw = bg.shape[:2]
+        lim = CORNER_MAX_OUTSIDE_FRAC * max(fw, fh)
+        clamped = []
+        for p in (tl, tr, br, bl):
+            q = (min(max(float(p[0]), -lim), fw + lim), min(max(float(p[1]), -lim), fh + lim))
+            clamped.append(q)
+        if any(abs(a[0] - b[0]) > 0.5 or abs(a[1] - b[1]) > 0.5 for a, b in zip((tl, tr, br, bl), clamped)):
+            corners["confidence"] = "low"
+            corners["front_method"] = str(corners.get("front_method", "")) + \
+                " | a corner was far outside the view and was pulled in - check it"
+        tl, tr, br, bl = clamped
         result = {
             "corners_px": [[round(bl[0], 1), round(bl[1], 1)], [round(br[0], 1), round(br[1], 1)],
                            [round(tr[0], 1), round(tr[1], 1)], [round(tl[0], 1), round(tl[1], 1)]],

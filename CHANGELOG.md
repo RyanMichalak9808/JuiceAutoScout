@@ -630,6 +630,22 @@ Cleanup deleted only the ticked stream audio and finished-match video (48 MB), a
 - **Made shots:** fully recovered on the duplicated clip, with the same times and HIVEs as 30 fps.
 - **Missed shots are still under-counted at 60 fps.** Part of that is the test clip's re-encoding: re-encoding the 30 fps clip alone already drops 7 misses to 5. The rest needs a real 60 fps match to tune against.
 
+### 23. Field corners always visible and draggable in the calibration editor (twenty-third commit)
+
+**Bug:** an automatically detected field corner could land outside the calibration editor's canvas, so it couldn't be seen or dragged to correct it.
+
+**Why corners aren't pinned to the camera frame:** with this low audience camera, the near floor-level corners are often below the bottom of the view ("corners visible 2/4"). Their positions are estimated from the field edges. Pinning such a corner to the frame edge would make it wrong and distort every robot position, shot and heatmap. So corners are kept within a bounded area around the frame instead.
+
+**Fixes:**
+- **Editor** (`calib_editor.js`):
+  - the grey border around the frame grows to show every corner where it really is, from 15% up to 50% of the frame size, plus a small strip so a corner on the limit is drawn in full;
+  - loaded corners and dragged corners are kept within 50% of the frame outside its edges.
+- **Automatic detection** (`field_detect.py`): corners are capped at the same 50% (`CORNER_MAX_OUTSIDE_FRAC`). A corner that had to be pulled in comes from a bad detection, so the calibration is marked low confidence with "check it".
+
+**Checked:**
+- **Browser:** a corner 140 px below a 640x360 frame stayed exactly where it was and was visible. One at y=900 was pulled in to the border (y=680) and visible. Dragging a corner far beyond the canvas stopped at the limit. No page errors.
+- **Automatic calibration** on piper_q9, piper_q11 and shanghai_q2_playoff5: byte-identical to before.
+
 ## Results on the example videos
 
 | | Original / first version | Now |

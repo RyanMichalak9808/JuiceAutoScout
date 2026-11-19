@@ -391,10 +391,10 @@
               <div class="section-title wide settings-group">Tracking</div>
               <label class="checkbox wide">
                 <input id="settingTrackEveryFrame" type="checkbox">
-                Track robots on every video frame (slower; off = track at the rate below; balls and touching robots are always followed every frame)
+                Track robots on every video frame (slower). When ticked, the tracking rate below is ignored and robots are tracked at the video's own frame rate (30 or 60 per second). Balls and touching robots are always followed on every frame.
               </label>
               <label>
-                Tracking rate (frames per second, when not every frame)
+                Tracking rate (frames per second; only used when "every video frame" is unticked)
                 <input id="settingTrackingRate" type="number" min="1" max="60" step="1" value="10">
               </label>
               <label class="checkbox">

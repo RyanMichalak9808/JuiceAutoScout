@@ -551,7 +551,7 @@ Cleanup deleted only the ticked stream audio and finished-match video (48 MB), a
 **New in Settings:**
 - **Tracking:**
   - **Track robots on every video frame:** on by default, same as before. When off, robots are tracked at the rate below. Balls and touching robots are still followed every frame either way.
-  - **Tracking rate:** 10 frames per second by default.
+  - **Tracking rate:** 10 frames per second by default. Only used when "every video frame" is unticked; when it's ticked, robots are tracked at the video's own frame rate (30 or 60 per second) and this rate is ignored. The Settings labels say so.
   - **Only process the field area:** the processing window from section 10, on by default.
 - **Full stream splitting:**
   - **Clip lead-in before AUTO:** 16 s.

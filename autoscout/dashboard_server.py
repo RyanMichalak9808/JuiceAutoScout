@@ -20,9 +20,11 @@ from urllib.parse import parse_qs, urlparse
 
 from autoscout.ftc_events import discover_event_videos
 from autoscout.scouting_stats import compute_team_stats
+from autoscout import stream_split
 from autoscout.hardware import collect_hardware_profile, collect_runtime_usage
 from autoscout.ytdlp import (
     auth_help_message,
+    build_download_attempts,
     build_playable_url_attempts,
     find_yt_dlp_command,
     get_yt_dlp_command_warning,
@@ -123,6 +125,7 @@ class DashboardState:
         self.root_dir = root_dir.resolve()
         self.jobs: Dict[str, TrackJob] = {}
         self.jobs_lock = threading.Lock()
+        self.stream_splits: Dict[str, Dict[str, object]] = {}
         self.hardware_lock = threading.Lock()
         self.hardware_profile = collect_hardware_profile()
         self.settings_lock = threading.Lock()
@@ -250,6 +253,76 @@ class DashboardState:
                 "playable_url": playable_url,
             }
         raise RuntimeError("Provide either a workspace_url or a youtube_url.")
+
+    def start_stream_split(self, body: Dict[str, object]) -> Dict[str, object]:
+        """Split one full event stream (YouTube URL or local file) into
+        per-match clips in the event's output folder (background thread)."""
+        event_code = str(body.get("event_code") or "").strip().upper()
+        source = str(body.get("source") or "").strip()
+        schedule = body.get("schedule") or []
+        if not event_code or not source:
+            raise RuntimeError("Load an event and enter the stream link or video path.")
+        if not re.match(r"https?://", source):
+            local = Path(source).expanduser()
+            if not local.is_absolute():
+                local = (self.root_dir / local).resolve()
+            if not local.exists():
+                raise RuntimeError("Video file not found: {}".format(source))
+            source = str(local)
+        current = self.stream_splits.get(event_code)
+        if current and current.get("status") == "running":
+            return current
+        status = {"event_code": event_code, "source": source, "status": "running", "log": [], "result": None}
+        self.stream_splits[event_code] = status
+
+        def log(message: str) -> None:
+            status["log"] = (status["log"] + [message])[-30:]
+
+        def run() -> None:
+            try:
+                yt_cmd, attempts = None, None
+                if re.match(r"https?://", source):
+                    yt_cmd = find_yt_dlp_command()
+                    if not yt_cmd:
+                        raise RuntimeError("yt-dlp is not installed.")
+                    raw_attempts, _notes = build_download_attempts([self.root_dir])
+                    attempts = [a["args"] for a in raw_attempts]
+                status["result"] = stream_split.split_stream(
+                    source, schedule, self._event_output_root(event_code),
+                    yt_dlp_cmd=yt_cmd, yt_dlp_attempts=attempts, log=log)
+                status["status"] = "done"
+                log("[INFO] Done: {} of {} matches labeled.".format(
+                    status["result"]["labeled"], len(status["result"]["matches"])))
+            except Exception as exc:  # report, never crash the server
+                status["status"] = "failed"
+                log("[ERROR] {}".format(exc))
+
+        threading.Thread(target=run, daemon=True).start()
+        return status
+
+    def get_stream_split(self, event_code: str) -> Dict[str, object]:
+        code = str(event_code or "").strip().upper()
+        return self.stream_splits.get(code) or {"event_code": code, "status": "idle", "log": [], "result": None}
+
+    def apply_stream_clips(self, result: Dict[str, object]) -> None:
+        """Matches with a ready stream clip can be queued (their video_url
+        points at the stream; the clip in the output folder is used)."""
+        path = self._event_output_root(str(result.get("event_code") or "").upper()) / "stream_split.json"
+        if not path.exists():
+            return
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                split = json.load(handle)
+        except (OSError, ValueError):
+            return
+        clips = {m.get("label"): m for m in split.get("matches", []) if m.get("status") == "clip_ready"}
+        for match in result.get("matches") or []:
+            clip = clips.get(match.get("label"))
+            if clip and not match.get("video_url"):
+                match["video_url"] = split.get("source")
+                match["status"] = "stream_clip"
+                match["stream_clip"] = {k: clip.get(k) for k in ("start_s", "start_offset", "confidence")}
+        result["video_count"] = sum(1 for m in result.get("matches") or [] if m.get("video_url"))
 
     def get_settings(self) -> Dict[str, object]:
         with self.settings_lock:
@@ -503,6 +576,13 @@ class DashboardState:
         if not resolved_output_dir.is_absolute():
             resolved_output_dir = (self.root_dir / resolved_output_dir).resolve()
         command = [sys.executable, "auto_scout.py", "--output-dir", output_dir]
+        clip_info_path = resolved_output_dir / "stream_clip.json"
+        if payload.get("start_offset") in (None, "") and clip_info_path.exists():
+            # clip cut from a full stream: AUTO start is known from the field buzzer
+            if not (resolved_output_dir / "match_video.mp4").exists():
+                raise RuntimeError("This match's stream clip was removed; run Split Stream again.")
+            with clip_info_path.open("r", encoding="utf-8") as handle:
+                payload = dict(payload, start_offset=json.load(handle).get("start_offset"))
         if payload.get("start_offset") in (None, ""):
             command.append("--auto-match-bounds")
 
@@ -889,6 +969,10 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/health":
             self._write_json({"ok": True, "time": time.time()})
             return
+        if path == "/api/event/split-stream":
+            code = (parse_qs(parsed.query).get("event_code") or [""])[0]
+            self._write_json(self.server.state.get_stream_split(code))
+            return
         if path == "/api/hardware":
             self._write_json(self.server.state.get_hardware())
             return
@@ -978,6 +1062,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 except Exception as exc:  # stats must never break event loading
                     result["analytics"] = {"teams": [], "matches_used": 0,
                                            "note": "Team stats failed: {}".format(exc)}
+                self.server.state.apply_stream_clips(result)
                 self._write_json(result)
                 return
 
@@ -1000,6 +1085,10 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 job_id = path.split("/")[3]
                 payload = self.server.state.stop_job(job_id)
                 self._write_json(payload)
+                return
+
+            if path == "/api/event/split-stream":
+                self._write_json(self.server.state.start_stream_split(body))
                 return
 
             if path == "/api/resolve-video-source":

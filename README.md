@@ -85,6 +85,10 @@ The dashboard adds:
 - an in-browser field-corner calibration tool that can use uploaded files, queued YouTube clips, example videos, prior source videos, or still-cached match downloads
 - yt-dlp cookies and extractor-args settings for both downloads and browser-playable YouTube resolution
 
+### Full event streams
+
+If an event only has one long stream, load the event, paste the stream (YouTube link or local video path) into **Full Stream** on the Overview page and press **Split Stream**. The field buzzers in the audio are used to find every match, the matches are labeled from the FTC Events schedule, and a clip with the exact AUTO start is cut for each one. The matches can then be processed like any other.
+
 ## CLI Flags
 | Flag | Type | Default | Description |
 | -------- | -------- | -------- | -------- |

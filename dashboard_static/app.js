@@ -101,6 +101,9 @@ function bindDom() {
   dom.selectStatus = document.getElementById("selectStatus");
   dom.eventTitle = document.getElementById("eventTitle");
   dom.reloadEventButton = document.getElementById("reloadEventButton");
+  dom.streamSourceInput = document.getElementById("streamSourceInput");
+  dom.splitStreamButton = document.getElementById("splitStreamButton");
+  dom.splitStreamStatus = document.getElementById("splitStreamStatus");
   dom.globalQueueTitle = document.getElementById("globalQueueTitle");
   dom.globalQueueMeta = document.getElementById("globalQueueMeta");
   dom.globalQueueEstimate = document.getElementById("globalQueueEstimate");
@@ -161,6 +164,7 @@ function bindEvents() {
   dom.eventCodeInput.addEventListener("input", updateResolvedEventUrl);
   dom.eventForm.addEventListener("submit", handleEventLoad);
   dom.reloadEventButton.addEventListener("click", reloadCurrentEvent);
+  dom.splitStreamButton.addEventListener("click", splitEventStream);
   dom.globalStartButton.addEventListener("click", toggleGlobalQueue);
   dom.refreshUsageButton.addEventListener("click", loadUsage);
   dom.processBackButton.addEventListener("click", () => setRoute("overview"));
@@ -2284,6 +2288,41 @@ async function autoRefreshCurrentEvent() {
 function extractMatchNumber(label) {
   const match = String(label || "").match(/(\d+)/);
   return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
+}
+
+async function splitEventStream() {
+  const event = state.currentEvent;
+  const source = dom.streamSourceInput.value.trim();
+  if (!event || !source) {
+    dom.splitStreamStatus.textContent = "Load an event and paste the stream link or video path first.";
+    return;
+  }
+  dom.splitStreamButton.disabled = true;
+  try {
+    await apiPost("/api/event/split-stream", {
+      event_code: event.event_code,
+      source,
+      schedule: (event.matches || []).map((m) => ({ label: m.label, phase: m.phase, time: m.start_time })),
+    });
+    for (;;) {
+      const status = await fetch(`/api/event/split-stream?event_code=${encodeURIComponent(event.event_code)}`).then((r) => r.json());
+      const last = (status.log || []).slice(-1)[0] || "Working...";
+      dom.splitStreamStatus.textContent = last.replace(/^\[(INFO|ERROR)\]\s*/, "");
+      if (status.status !== "running") {
+        if (status.status === "done") {
+          const low = status.result?.low_confidence || 0;
+          dom.splitStreamStatus.textContent += low ? ` (${low} matched from one buzzer only - check those)` : "";
+          await reloadCurrentEvent();
+        }
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+    }
+  } catch (error) {
+    dom.splitStreamStatus.textContent = error.message;
+  } finally {
+    dom.splitStreamButton.disabled = false;
+  }
 }
 
 function slugify(text) {

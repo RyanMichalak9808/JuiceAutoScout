@@ -25,7 +25,7 @@ Measured with `git diff 4d1be90 HEAD`. Example videos and images are excluded.
 | `autoscout/shot.py` | 470 | 536 | +14% (most of the logic rewritten) |
 | `auto_scout.py` | 809 | 1,061 | +31% |
 | `autoscout/dashboard_server.py` | 950 | 1,132 | +19% |
-| New files | | | `autoscout/season.py`, `autoscout/analytics.py`, `autoscout/scouting_stats.py`, `autoscout/field_detect.py`, `autoscout/hive.py`, `autoscout/match_start.py`, `dashboard_static/calib_editor.js`, `tools/find_match_start.py`, `assets/biobuzz-field.png`, `CHANGELOG.md`, three example videos and their calibrations |
+| New files | | | `autoscout/season.py`, `autoscout/analytics.py`, `autoscout/scouting_stats.py`, `autoscout/stream_split.py`, `autoscout/field_detect.py`, `autoscout/hive.py`, `autoscout/match_start.py`, `dashboard_static/calib_editor.js`, `tools/find_match_start.py`, `assets/biobuzz-field.png`, `CHANGELOG.md`, three example videos and their calibrations |
 
 Most of the work is added code behind switches; apart from the shot detector, little original code was rewritten.
 
@@ -397,6 +397,43 @@ On these cameras the field fills most of the picture (the window is 86-90% of th
 - **Not tested live:** this build environment can't reach ftc-events.firstinspires.org, so a live event pull wasn't run here. It uses the same results the dashboard already scrapes.
 
 **Note:** the stats are only as good as the scraped scores. A match whose scores can't be read from the FTC Events page is left out.
+
+### 12. Split a full event stream into matches (twelfth commit)
+
+**Why:** many events only post one long stream instead of a video per match, so the dashboard had nothing to process even though the FTC Events results and team stats loaded fine.
+
+**What:** a **Full Stream** box on the Overview page. Paste the event's stream (a YouTube link or a video file on this computer) and press **Split Stream**. Every qualification match is found, labeled and cut into its own clip, and those matches can then be processed and queued like any other.
+
+**How it works** (`autoscout/stream_split.py`; kept light, since it mostly works from the audio):
+1. **Audio only first.** For a YouTube link, only the audio is downloaded (smallest format, about 20 MB per hour). It is decoded at 8 kHz mono in parallel chunks across the CPU cores.
+2. **Field buzzers.** The end-of-AUTO and end-of-match buzzers are a narrow 3240 Hz tone, and they always come exactly 128 s apart (8 s transition + 2:00 TELEOP).
+   - Commentary: a narrow-band tone test ignores speech.
+   - Stray beeps: pairing at 128 ± 1.5 s rejects them.
+   - A match where one buzzer is drowned out is still kept if the other is strong, and is marked low confidence.
+   - AUTO starts 29.6 s before the end-of-AUTO buzzer. This was measured from the start sound and from robot motion on the test stream.
+3. **Labels from FTC Events.** The start times on FTC Events are only to the minute and are often off, so only the gaps between matches are used.
+   - The best single offset is found first, then the two lists are lined up in order.
+   - Skips are allowed both ways: replays and false hits in the stream, or matches missing from it.
+   - The event page scrape now also records each match's start time (`start_time`).
+4. **Clips without re-encoding.** Each match is cut with stream copy from a local file, or downloaded as a yt-dlp section from YouTube (video only up to 720p), with 6 s padding.
+   - Stream-copy cuts start at the previous keyframe, so the buzzer is found again in the clip's own audio. This gives the exact AUTO start inside the clip.
+   - The clip and its `stream_clip.json` go into the match's output folder.
+5. **Tracking.** When a match is queued, the dashboard uses the clip and passes `--start-offset` from `stream_clip.json`, so the broadcast clock is not used at all. Calibration and approval work as before.
+
+**Test stream:** FTC Meet @ Piper 1PM, event USMOKSKCWM7 (2h14m, 18 qualification matches).
+- **Matches found:** all 18, each with both buzzers. No false matches, and all 18 labeled correctly. Q9 and Q11 match the clips of those matches used earlier.
+- **Timing against the schedule:** every match is within ±31 s of its FTC Events time.
+- **Timing against the video:** robots start moving 0.2-0.5 s after the computed AUTO start in every clip checked.
+- **Speed:**
+  - audio step (decode, detect, label): about 11 s for the whole stream; decoding was 29 s before the parallel decode;
+  - full split including cutting all 18 clips from a local file: 33 s.
+- **End to end in the dashboard:** load the event live from FTC Events, split, reload, queue Q9. It ran field calibration on the clip with `--start-offset 9.45` and no download, and reached "awaiting approval" with high confidence.
+
+**Not tested here:** the YouTube download path, because YouTube blocks downloads from this build environment. It uses the same yt-dlp attempts (and cookies) as the normal match download.
+
+**Limits:**
+- It relies on the field buzzer being audible in the stream. A stream with the field audio muted finds no matches.
+- If the processed clip was deleted after a successful run, processing that match again asks you to split the stream again.
 
 ## Results on the example videos
 

@@ -47,6 +47,7 @@ class MatchVideoRecord:
     red_score: Optional[int] = None
     blue_score: Optional[int] = None
     winning_alliance: Optional[str] = None
+    start_time: Optional[str] = None   # as shown, e.g. 'Sat 11/14 - 2:44 PM'
     video_url: Optional[str] = None
     external_links: List[str] = field(default_factory=list)
     status: str = "pending"
@@ -200,6 +201,9 @@ def _extract_match_records(page_html: str, page_url: str, phase: str) -> List[Ma
             if len(team_numbers) >= 4:
                 break
 
+        lead_end = team_anchor_spans[0][0] if team_anchor_spans else next_start
+        time_match = re.search(r"\d{1,2}/\d{1,2}\s*-\s*\d{1,2}:\d{2}\s*[AP]M",
+                               _clean_text(page_html[match_anchor["end"]:lead_end]), re.IGNORECASE)
         trailing_start = team_anchor_spans[-1][1] if team_anchor_spans else match_anchor["end"]
         trailing_text = _clean_text(page_html[trailing_start:next_start])
         trailing_scores = [int(token) for token in re.findall(r"\b\d+\b", trailing_text)]
@@ -215,6 +219,7 @@ def _extract_match_records(page_html: str, page_url: str, phase: str) -> List[Ma
             red_score=red_score,
             blue_score=blue_score,
             winning_alliance=_winning_alliance(red_score, blue_score),
+            start_time=time_match.group(0) if time_match else None,
         )
         key = (record.label, record.match_page_url)
         if key in seen:

@@ -1159,3 +1159,7 @@ label {
 .analytics-chart .pt { fill: #fe8f00; }
 .analytics-chart .lbl { fill: rgba(255,255,255,0.75); font-size: 10px; }
 .analytics-chart .axl { fill: rgba(255,255,255,0.6); font-size: 12px; text-anchor: middle; }
+
+.stream-split { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.stream-split .queue-copy { flex: 1 1 260px; }
+.stream-split input { flex: 2 1 260px; min-width: 0; }

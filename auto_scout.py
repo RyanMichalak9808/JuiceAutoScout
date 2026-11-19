@@ -17,6 +17,7 @@ from autoscout.helpers import (
 from autoscout import season
 from autoscout.match_timer import scan_match_bounds
 from autoscout.runtime import _make_bar, _require, install_console_output
+from autoscout.field_detect import FieldCalibrator, draw_calibration
 from autoscout.hive import HiveTipDetector
 from autoscout.shot import ShotDetector
 from autoscout.tracker import RobotTracker
@@ -275,6 +276,27 @@ def process_match(
             print("[INFO] Debug video: {} [{} @ {:.2f} fps]".format(
                 debug_video_path, debug_codec, debug_fps))
 
+    auto_calibration_failed = False
+    if not manual_corners_px and season.AUTO_FIELD_CALIBRATION:
+        # No calibration given: detect the field (corners at floor level, HIVE,
+        # FLOWER and overlay boxes) from the video itself.
+        _emit_dashboard_stage("Calibrating Trackers", "in_progress", "Detecting field corners")
+        auto_cal = auto_calibrate_video(cv2, np, video_path, output_dir,
+                                        start_s=start_frame / video_fps,
+                                        end_s=stop_frame / video_fps)
+        if auto_cal is not None:
+            manual_corners_px = auto_cal["corners_px"]
+            calibration_extras = dict(calibration_extras or {})
+            for key in ("hive_boxes_px", "exclude_px", "flower_boxes_px"):
+                if key in auto_cal and key not in calibration_extras:
+                    calibration_extras[key] = auto_cal[key]
+            print("[INFO] Using automatic field calibration ({}, {} confidence). Check {} .".format(
+                auto_cal["auto"]["method"], auto_cal["auto"]["confidence"],
+                os.path.join(output_dir, "field_corners_auto_preview.jpg")))
+        else:
+            auto_calibration_failed = True
+            print("[WARN] Falling back to the per-frame field outline detector.")
+
     if manual_corners_px:
         ordered = np.array(_manual_corners_file_to_tracker_order(manual_corners_px), dtype=np.float32)
         dst2d = np.array([[0, 0], [144, 0], [144, 144], [0, 144]], dtype=np.float32)
@@ -335,6 +357,10 @@ def process_match(
     dense_merge_hold = 0
     next_debug_source_frame = start_frame
     dashboard_preview_every = max(debug_every_n, _dashboard_preview_interval()) if dashboard_stream_previews else max(1, debug_every_n)
+    last_poses = None
+    glitch_frames = 0
+    pending_shot_events = []
+    shot_detector._fps = video_fps
     calibration_completed = H_inv is not None
     tracking_started = H_inv is not None
     while True:
@@ -351,6 +377,13 @@ def process_match(
 
         process_dense = dense_merge_hold > 0 or bool(tracker._merge_groups)
         if not process_dense and (current_frame_num - start_frame) % frame_step != 0:
+            # Robot tracking skips this frame, but balls are followed on every
+            # frame: fast vertical shots cross the view in a few frames.
+            if H_inv is not None and last_poses is not None and not tracker.is_glitch_frame(frame):
+                tracker.ball_mask_only(frame)
+                pending_shot_events.extend(shot_detector.update(
+                    current_frame_num, match_time_s, None, tracker,
+                    hive_moving=lambda color: hive_detector.is_moving(color, match_time_s)))
             continue
 
         bar.next()
@@ -362,7 +395,7 @@ def process_match(
                 frames_to_process,
             )
 
-        if ordered is None:
+        if ordered is None and (not season.AUTO_FIELD_CALIBRATION or auto_calibration_failed):
             result = field_detector.detect_field(frame)
             if result is not None:
                 ordered, H_2d = result
@@ -379,12 +412,17 @@ def process_match(
                 if tracker._bg is not None:
                     cv2.imwrite(os.path.join(output_dir, "median_background.jpg"), tracker._bg)
 
+        if tracker._bg is not None and tracker.is_glitch_frame(frame):
+            glitch_frames += 1
+            continue
         tip_events = hive_detector.update(frame, current_frame_num, match_time_s)
         tracker.set_hive_state(hive_detector.state(match_time_s))
         poses = tracker.update(frame, time_s=match_time_s)
-        shot_events = shot_detector.update(
+        last_poses = poses
+        shot_events = pending_shot_events + shot_detector.update(
             current_frame_num, match_time_s, poses, tracker,
             hive_moving=lambda color: hive_detector.is_moving(color, match_time_s))
+        pending_shot_events = []
         for tip in tip_events:
             tip_log.append(_tip_row(tip, video_fps))
             print("[INFO] HIVE tip: {} #{} at match t={:.1f}s (video {:.1f}s, {})".format(
@@ -600,9 +638,9 @@ def process_match(
                         next_debug_source_frame += base_debug_interval
 
         for event in shot_events:
-            print("[INFO] Shot {} by R{} at ({:.1f},{:.1f}) goal={}".format(
+            print("[INFO] Shot {} by {} at ({:.1f},{:.1f}) goal={}".format(
                 event.result,
-                event.shooter_id,
+                "R{}".format(event.shooter_id) if event.shooter_id >= 0 else "unknown robot",
                 event.shot_x_in,
                 event.shot_y_in,
                 event.goal_color or "unknown",
@@ -622,6 +660,8 @@ def process_match(
     csv_file.close()
     jlog_writer.close()
     cap.release()
+    if glitch_frames:
+        print("[INFO] Skipped {} frame(s) with a camera cut/flash (most of the field changed at once).".format(glitch_frames))
     tips_path = os.path.join(output_dir, "hive_tips.csv")
     shots_path = os.path.join(output_dir, "shot_events.csv")
     _write_rows(tips_path, TIP_LOG_COLUMNS, tip_log)
@@ -697,11 +737,11 @@ def _shot_row(event, video_fps):
         "phase": _match_phase(event.timestamp_s),
         "video_time_s": "{:.2f}".format(event.frame_num / video_fps),
         "frame": event.frame_num,
-        "robot": "R{}".format(event.shooter_id),
+        "robot": "R{}".format(event.shooter_id) if event.shooter_id >= 0 else "unknown",
         "result": event.result,
         "hive": event.goal_color or "unknown",
-        "shooter_x_in": "{:.1f}".format(event.shot_x_in),
-        "shooter_y_in": "{:.1f}".format(event.shot_y_in),
+        "shooter_x_in": "{:.1f}".format(event.shot_x_in) if event.shot_x_in == event.shot_x_in else "",
+        "shooter_y_in": "{:.1f}".format(event.shot_y_in) if event.shot_y_in == event.shot_y_in else "",
     }
 
 
@@ -722,13 +762,43 @@ def _print_event_summary(tip_log, shot_log):
             alliance, len(in_match), len(auto),
             "" if len(rows) == len(in_match) else ", {} outside match time".format(len(rows) - len(in_match))))
     print("  Shots (made / missed):")
-    for robot in ("R0", "R1", "R2", "R3"):
+    for robot in ("R0", "R1", "R2", "R3", "unknown"):
         rows = [r for r in shot_log if r["robot"] == robot]
         made = sum(1 for r in rows if r["result"] == "made")
         print("    {}    {} / {}".format(robot, made, len(rows) - made))
     for hive in ("red", "blue"):
         made = sum(1 for r in shot_log if r["result"] == "made" and r["hive"] == hive)
         print("    into {} HIVE: {} made".format(hive, made))
+
+
+def auto_calibrate_video(cv2, np, video_path, output_dir, start_s=0.0, end_s=None):
+    """Run the automatic field calibration and save field_corners_auto.json
+    plus a preview image in output_dir. Returns the calibration or None."""
+    calibrator = FieldCalibrator(cv2, np)
+    result = calibrator.calibrate_video(video_path, start_s=start_s, end_s=end_s)
+    if result is None:
+        print("[WARN] Automatic field calibration failed; draw corners with tools/calibrate.py.")
+        return None
+    os.makedirs(output_dir, exist_ok=True)
+    with open(os.path.join(output_dir, "field_corners_auto.json"), "w") as handle:
+        json.dump(result, handle, indent=2)
+    cap = cv2.VideoCapture(video_path)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    mid = int(((start_s or 0.0) * fps + (end_s * fps if end_s else total - 1)) / 2)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, mid))
+    ok, frame = cap.read()
+    cap.release()
+    if ok:
+        cv2.imwrite(os.path.join(output_dir, "calibration_frame.jpg"), frame)
+        cv2.imwrite(os.path.join(output_dir, "field_corners_auto_preview.jpg"),
+                    draw_calibration(cv2, np, frame, result))
+    a = result["auto"]
+    print("[INFO] Field calibration: {} | corners visible {}/4 | confidence {}".format(
+        a["method"], a["visible_corners"], a["confidence"]))
+    for note in a.get("notes", []):
+        print("[INFO]   {}".format(note))
+    return result
 
 
 def _print_instructions():
@@ -898,6 +968,9 @@ def main():
                         help="Save 1 debug frame every N processed frames (default 1)")
     parser.add_argument("--debug-enable-hitboxes", action="store_true",
                         help="Draw robot wireframe hitboxes in debug frames")
+    parser.add_argument("--calibrate-only", action="store_true",
+                        help="Only detect the field (corners, HIVE/FLOWER/overlay boxes), write "
+                             "field_corners_auto.json + preview to --output-dir, and exit")
     parser.add_argument("--no-download", action="store_true")
     parser.add_argument("--video-path", default=None)
     parser.add_argument("--corners", default=None,
@@ -933,6 +1006,17 @@ def main():
         video_path = download_video(args.url, args.output_dir)
 
     print("[INFO] Output:", args.output_dir)
+    if args.calibrate_only:
+        cv2 = _require("cv2", "opencv-python")
+        np = _require("numpy")
+        _emit_dashboard_stage("Loading Match Footage", "completed", "Match footage is ready")
+        _emit_dashboard_stage("Calibrating Trackers", "in_progress", "Detecting field corners")
+        result = auto_calibrate_video(cv2, np, video_path, args.output_dir, start_s=args.start_offset)
+        if result is None:
+            _emit_dashboard_stage("Calibrating Trackers", "failed", "Automatic field calibration failed")
+            sys.exit(2)
+        _emit_dashboard_stage("Calibrating Trackers", "completed", "Field calibration ready for approval")
+        return
     corners = None
     calibration_extras = None
     if args.corners:
@@ -941,7 +1025,7 @@ def main():
         corners = calibration["corners_px"]
         calibration_extras = {
             key: calibration[key]
-            for key in ("hive_boxes_px", "exclude_px")
+            for key in ("hive_boxes_px", "exclude_px", "flower_boxes_px")
             if key in calibration
         }
         print("[INFO] Corners:", args.corners)

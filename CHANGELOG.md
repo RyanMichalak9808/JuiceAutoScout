@@ -229,6 +229,61 @@ So the current fingerprint stays as it is. Core sampling is kept as a switch, of
 - **Stuck label:** from about 14 to 38 s one label (R3) stays stuck next to a large robot near the camera at the front-right, while the fourth robot is hidden behind the blue HIVE.
 - **Referee:** when the referee walks onto the edge of the field area (around 50 s), labels can latch onto them for a moment.
 
+### 7. Shot detector rewrite, automatic field calibration, approval step (seventh commit)
+
+**Automatic field calibration (`autoscout/field_detect.py`)**
+- **What:** corners are found at FLOOR level (where the carpet meets the bottom of the walls), together with the HIVE, FLOWER and overlay boxes. It runs per match, so fields with different camera angles each get their own calibration.
+- **Why:** hand-placed corners were wrong. On the Piper videos the bottom corners had been set on the top of the front wall rail instead of its floor line, and the top corners were a little wide.
+- **How:**
+  - the field carpet is segmented from a median background (pixels that look like carpet in at least 20% of frames count, so parked robots don't hide the floor);
+  - the back, left and right floor lines are fitted to the carpet boundary (side lines must be the outer limit of the carpet, so FLOWERS and people at the walls don't pull them inward);
+  - lines are extended to corners that are off-screen or under the overlay;
+  - the near floor edge is usually hidden behind the front wall's top rail, so the rail is found and the floor line placed below it by the projected wall height. The wall height is measured at the back wall, where floor edge and rail are both visible (12.2-12.3 in measured on q9).
+- **HIVE boxes:** a geometric prior from the HIVE's size and position (manual 9.6), refined by the HIVE colors over the match and clipped to stay out of overlay bands.
+- **FLOWER boxes:** projected from their known field positions (`season.FLOWER_POSITIONS_IN`).
+- **Tested on 6 videos (3 BIOBUZZ, 3 DECODE):**
+  - works with 2/4, 3/4 or 4/4 corners visible;
+  - known-position checks (FLOWER bases and tops, the tile grid) line up on q9, q11 and Shanghai;
+  - on the overhead Edison camera the front edge is under the overlay, so it reports **low** confidence and asks for a check.
+- **Fallback:** if detection fails, tracking falls back to the old per-frame outline detector.
+
+**Approval before processing (dashboard)**
+- **What:** a match started without a calibration file first runs detection only (`auto_scout.py --calibrate-only`), then waits as **Needs Approval**.
+- **The panel** shows a frame from the match with the field outline (gray margin for off-screen corners), HIVE, FLOWER and ignore boxes, all draggable, plus **Approve & Start Tracking**.
+- **On approval:** the edited calibration is saved as that match's `field_corners.json` and tracking starts. This is also the per-match manual fallback.
+- **Turning it off:** setting `require_calibration_approval` to false starts tracking directly on the automatic calibration.
+
+**Browser calibration tab**
+- **Auto-Detect Field** button.
+- **Boxes:** +Red HIVE / +Blue HIVE / +FLOWER / +Ignore Area, plus delete.
+- **Corners** can be dragged outside the picture.
+- **Saving** writes all boxes; `tools/calibrate.py` gained `F` (FLOWER box), `A` (auto-detect) and a gray border for off-screen corners.
+
+**Shot detector rewrite (`autoscout/shot.py`)**
+- **Why:** most shots were drawn as gray (not-a-shot) traces and few counted as made. The ball was only looked at on tracker frames (every 3rd frame), so a fast vertical shot jumped too far between looks to stay one track.
+- **Every frame:** balls are now followed on every source frame (a light ball-only pass runs on frames the robot tracker skips).
+- **Prediction:** includes gravity, and the association window is taller than wide.
+- **Shot rule:** a ball rising at least 14 px, mostly in upward steps, sideways at most 1.5x its rise. Shots this season are steep.
+- **Made:** the ball reaches the CELL zone (upper 80% of the HIVE box) and is not seen falling back out below the box; it can also settle in the CELL.
+- **Missed:** the ball rises to CELL height but doesn't go in, or falls back out.
+- **Shooter:** the robot nearest the launch point within 1.6 robot sizes, else `unknown`.
+- **Burst fire:** quick bursts are no longer merged by a 0.35 s per-robot time filter.
+- **Debug colors:** yellow = shot in flight, green = made, red = missed, gray = ball not judged a shot.
+
+**Filtering things that are not on the field**
+- **People:** foreground shapes mostly outside the side or front walls (referees, drive teams) are removed from robot and ball detection, including the part of them above where they stand. Robots touching the crowd beside a wall are kept.
+- **People in front of the camera:** shapes that reach the bottom of the picture and are much taller than a robot are removed.
+- **Yellow jackets:** POLLEN must be ball-sized and compact; yellow on people is removed with them.
+- **FLOWER boxes:** removed from shot detection, so their yellow top rings and POLLEN placed in them are ignored. HIVE boxes always stay searchable.
+- **Camera cuts and flashes:** frames where every quarter of the field changes at once are skipped (only after the match ended on the examples).
+
+**Results with automatic calibration**
+- **HIVE tips:** still exact on all three BIOBUZZ videos (34 / 34).
+- **Hand check:** on q9's first volley (3 POLLEN into the red HIVE at 10.7-10.9 s) all three shots were found from the right robot.
+- **Limit:** two or three balls flying up side by side at 640x360 are sometimes counted as one or two.
+
+**Not yet handled:** a referee's legs that stand inside the field area and don't reach the bottom of the picture can still be detected as foreground. Tracks won't jump to them across the field, and shapes bigger than 6 robots are ignored.
+
 ## Results on the example videos
 
 | | Original / first version | Now |
@@ -264,6 +319,7 @@ The switches:
 - `FG_VERTICAL_CLOSE_PX`, `FRONT_RAIL_CLOSE_PX` (set to 0 to turn off)
 - `MAX_BLOB_ROBOTS` (set to 0 to turn off)
 - `MERGE_UNSEEN_RELEASE_S` (off by default)
+- `AUTO_FIELD_CALIBRATION`, `FILTER_OFF_FIELD_PEOPLE`, `PERSON_MAX_ROBOT_HEIGHTS`, `GLITCH_FIELD_CHANGED_FRAC`
 
 ## Known limitations
 

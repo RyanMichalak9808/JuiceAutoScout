@@ -1,5 +1,7 @@
 import base64
 import json
+import shutil
+import tempfile
 import mimetypes
 import os
 import re
@@ -81,6 +83,12 @@ class TrackJob:
     latest_preview_updated_at: Optional[float] = None
     stop_requested: bool = False
     process: Optional[subprocess.Popen] = None
+    # Calibration approval (two-phase jobs): the field is detected first,
+    # then the job waits in "awaiting_approval" until the user approves or
+    # edits the calibration in the dashboard.
+    phase: str = "track"
+    calibration: Optional[Dict[str, object]] = None
+    track_payload: Optional[Dict[str, object]] = None
 
     def to_dict(self) -> Dict[str, object]:
         return {
@@ -104,6 +112,8 @@ class TrackJob:
             "process_stages": [dict(self.process_stages[name]) for name in PROCESS_STAGE_ORDER],
             "preview_frame_count": self.preview_frame_count,
             "stop_requested": self.stop_requested,
+            "phase": self.phase,
+            "calibration": self.calibration,
         }
 
 
@@ -125,6 +135,7 @@ class DashboardState:
             "output_root": "./output_dashboard",
             "ytdlp_cookies_path": "",
             "ytdlp_extractor_args": "",
+            "require_calibration_approval": True,
         }
 
     def refresh_hardware(self) -> Dict[str, object]:
@@ -233,7 +244,8 @@ class DashboardState:
             "artifacts": artifacts,
         }
 
-    def save_corners(self, filename: str, corners_px: List[List[float]]) -> Dict[str, object]:
+    def save_corners(self, filename: str, corners_px: List[List[float]],
+                     extras: Optional[Dict[str, object]] = None) -> Dict[str, object]:
         if not filename:
             raise RuntimeError("A filename is required.")
         destination = (self.root_dir / filename).resolve()
@@ -247,17 +259,155 @@ class DashboardState:
             try:
                 with destination.open("r", encoding="utf-8") as handle:
                     existing = json.load(handle)
-                for key in ("hive_boxes_px", "exclude_px"):
+                for key in ("hive_boxes_px", "exclude_px", "flower_boxes_px"):
                     if key in existing:
                         payload[key] = existing[key]
             except (OSError, ValueError):
                 pass
+        # boxes drawn in the browser replace the stored ones
+        for key, value in (extras or {}).items():
+            payload[key] = value
         with destination.open("w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=2)
             handle.write("\n")
         return {"saved": True, "path": str(destination)}
 
     def start_track_job(self, payload: Dict[str, object]) -> Dict[str, object]:
+        settings = self.get_settings()
+        needs_approval = (not payload.get("corners")) and bool(
+            payload.get("require_calibration_approval", settings.get("require_calibration_approval", True)))
+        if needs_approval:
+            return self._start_calibration_job(payload)
+        command, resolved_output_dir, resolved_source_video_path, source_type = self._build_track_command(payload)
+        job = TrackJob(
+            job_id=uuid.uuid4().hex[:10],
+            command=command,
+            cwd=str(self.root_dir),
+            output_dir=str(resolved_output_dir),
+            source_type=source_type,
+            source_url=str(payload.get("url")) if payload.get("url") else None,
+            source_video_path=resolved_source_video_path,
+            event_code=str(payload.get("event_code")) if payload.get("event_code") else None,
+            match_label=str(payload.get("match_label")) if payload.get("match_label") else None,
+            match_phase=str(payload.get("match_phase")) if payload.get("match_phase") else None,
+        )
+        with self.jobs_lock:
+            self.jobs[job.job_id] = job
+        thread = threading.Thread(target=self._run_track_job, args=(job,), daemon=True)
+        thread.start()
+        return job.to_dict()
+
+    def _start_calibration_job(self, payload: Dict[str, object]) -> Dict[str, object]:
+        """Phase 1: download (if needed) and detect the field. The job then
+        waits for approval of the calibration before tracking starts."""
+        track_command, resolved_output_dir, source_video_path, source_type = self._build_track_command(payload)
+        command = [arg for arg in track_command if arg != "--auto-match-bounds"]
+        # keep only the source / output arguments, then ask for calibration only
+        keep = []
+        skip_next = False
+        drop_with_value = {"--debug-every", "--sample-rate", "--manual-reference-csv", "--robot-init-positions", "--corners"}
+        drop_flags = {"--debug", "--debug-video", "--debug-enable-hitboxes"}
+        for arg in command:
+            if skip_next:
+                skip_next = False
+                continue
+            if arg in drop_with_value:
+                skip_next = True
+                continue
+            if arg in drop_flags:
+                continue
+            keep.append(arg)
+        keep.append("--calibrate-only")
+        job = TrackJob(
+            job_id=uuid.uuid4().hex[:10],
+            command=keep,
+            cwd=str(self.root_dir),
+            output_dir=str(resolved_output_dir),
+            source_type=source_type,
+            source_url=str(payload.get("url")) if payload.get("url") else None,
+            source_video_path=source_video_path,
+            event_code=str(payload.get("event_code")) if payload.get("event_code") else None,
+            match_label=str(payload.get("match_label")) if payload.get("match_label") else None,
+            match_phase=str(payload.get("match_phase")) if payload.get("match_phase") else None,
+            phase="calibrate",
+            track_payload=dict(payload),
+        )
+        with self.jobs_lock:
+            self.jobs[job.job_id] = job
+        thread = threading.Thread(target=self._run_track_job, args=(job,), daemon=True)
+        thread.start()
+        return job.to_dict()
+
+    def approve_calibration(self, job_id: str, calibration: Optional[Dict[str, object]]) -> Dict[str, object]:
+        """Phase 2: save the (possibly edited) calibration for this match and
+        start tracking with it."""
+        with self.jobs_lock:
+            job = self.jobs.get(job_id)
+        if job is None:
+            raise RuntimeError("Job not found.")
+        if job.status != "awaiting_approval":
+            raise RuntimeError("This job is not waiting for calibration approval.")
+        calib = dict(calibration or job.calibration or {})
+        corners = calib.get("corners_px")
+        if not isinstance(corners, list) or len(corners) != 4:
+            raise RuntimeError("The calibration needs exactly four field corners.")
+        out_dir = Path(job.output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        corners_path = out_dir / "field_corners.json"
+        saved = {key: calib[key] for key in ("corners_px", "hive_boxes_px", "exclude_px", "flower_boxes_px") if key in calib}
+        saved["approved"] = True
+        with corners_path.open("w", encoding="utf-8") as handle:
+            json.dump(saved, handle, indent=2)
+            handle.write("\n")
+        payload = dict(job.track_payload or {})
+        payload["corners"] = str(corners_path)
+        # reuse the video downloaded during calibration
+        command, _out, source_video_path, _src = self._build_track_command(payload)
+        job.command = command
+        job.source_video_path = source_video_path or job.source_video_path
+        job.phase = "track"
+        job.calibration = saved
+        job.status = "queued"
+        job.return_code = None
+        job.finished_at = None
+        job.logs.append("[INFO] Calibration approved; saved {}".format(corners_path))
+        thread = threading.Thread(target=self._run_track_job, args=(job,), daemon=True)
+        thread.start()
+        return job.to_dict()
+
+    def auto_calibrate_source(self, source: str) -> Dict[str, object]:
+        """Detect the field for a video already on disk (Calibration tab)."""
+        kind, _sep, value = str(source or "").partition(":")
+        if kind != "workspace" or not value.startswith("/workspace/"):
+            raise RuntimeError("Auto-detect works on videos stored on this computer; "
+                               "process the match (it asks for approval) or pick a local video.")
+        video = (self.root_dir / value[len("/workspace/"):]).resolve()
+        if self.root_dir not in video.parents or not video.exists():
+            raise RuntimeError("Video not found in the project workspace.")
+        out_dir = Path(tempfile.mkdtemp(prefix="autoscout_calib_"))
+        try:
+            proc = subprocess.run(
+                [sys.executable, "auto_scout.py", "--no-download", "--video-path", str(video),
+                 "--calibrate-only", "--output-dir", str(out_dir)],
+                cwd=str(self.root_dir), capture_output=True, text=True, timeout=600)
+            calib_path = out_dir / "field_corners_auto.json"
+            if proc.returncode != 0 or not calib_path.exists():
+                tail = (proc.stdout or "").strip().splitlines()[-3:]
+                raise RuntimeError("Automatic field detection failed. {}".format(" ".join(tail)))
+            with calib_path.open("r", encoding="utf-8") as handle:
+                return {"calibration": json.load(handle)}
+        finally:
+            shutil.rmtree(out_dir, ignore_errors=True)
+
+    def get_job_calibration_frame(self, job_id: str) -> Optional[Path]:
+        with self.jobs_lock:
+            job = self.jobs.get(job_id)
+        if job is None:
+            return None
+        path = Path(job.output_dir) / "calibration_frame.jpg"
+        return path if path.exists() else None
+
+    def _build_track_command(self, payload: Dict[str, object]):
         source_type = str(payload.get("source_type") or "youtube").lower()
         settings = self.get_settings()
         output_dir = str(payload.get("output_dir") or settings.get("output_root") or "./output")
@@ -265,7 +415,8 @@ class DashboardState:
         if not resolved_output_dir.is_absolute():
             resolved_output_dir = (self.root_dir / resolved_output_dir).resolve()
         command = [sys.executable, "auto_scout.py", "--output-dir", output_dir]
-        command.append("--auto-match-bounds")
+        if payload.get("start_offset") in (None, ""):
+            command.append("--auto-match-bounds")
 
         corners = payload.get("corners")
         if corners:
@@ -322,24 +473,7 @@ class DashboardState:
                 resolved_source_video_path = str(cached_video_path)
             else:
                 command.append(str(url))
-
-        job = TrackJob(
-            job_id=uuid.uuid4().hex[:10],
-            command=command,
-            cwd=str(self.root_dir),
-            output_dir=str(resolved_output_dir),
-            source_type=source_type,
-            source_url=str(payload.get("url")) if payload.get("url") else None,
-            source_video_path=resolved_source_video_path,
-            event_code=str(payload.get("event_code")) if payload.get("event_code") else None,
-            match_label=str(payload.get("match_label")) if payload.get("match_label") else None,
-            match_phase=str(payload.get("match_phase")) if payload.get("match_phase") else None,
-        )
-        with self.jobs_lock:
-            self.jobs[job.job_id] = job
-        thread = threading.Thread(target=self._run_track_job, args=(job,), daemon=True)
-        thread.start()
-        return job.to_dict()
+        return command, resolved_output_dir, resolved_source_video_path, source_type
 
     def stop_job(self, job_id: str) -> Dict[str, object]:
         with self.jobs_lock:
@@ -408,6 +542,24 @@ class DashboardState:
         return_code = process.wait()
         job.return_code = return_code
         job.finished_at = time.time()
+        if job.phase == "calibrate" and not job.stop_requested:
+            calib_path = Path(job.output_dir) / "field_corners_auto.json"
+            if return_code == 0 and calib_path.exists():
+                try:
+                    with calib_path.open("r", encoding="utf-8") as handle:
+                        job.calibration = json.load(handle)
+                except (OSError, ValueError):
+                    job.calibration = None
+            downloaded = Path(job.output_dir) / "match_video.mp4"
+            if downloaded.exists():
+                job.source_video_path = str(downloaded)
+            if job.calibration is None:
+                # automatic calibration failed: ask for a manual one
+                job.calibration = {"corners_px": [], "auto": {"confidence": "failed",
+                                   "method": "automatic calibration failed - place the corners by hand"}}
+            job.status = "awaiting_approval"
+            job.logs.append("[INFO] Field calibration ready - approve or adjust it in the dashboard to start tracking.")
+            return
         if job.stop_requested and return_code != 0:
             job.status = "cancelled"
             self._fail_in_progress_stages(job, "Stopped")
@@ -662,6 +814,13 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/jobs":
             self._write_json({"jobs": self.server.state.list_jobs()})
             return
+        if re.fullmatch(r"/api/jobs/[^/]+/calibration-frame", path):
+            frame_path = self.server.state.get_job_calibration_frame(path.split("/")[3])
+            if frame_path is None:
+                self._write_json({"error": "Calibration frame not available."}, status=HTTPStatus.NOT_FOUND)
+                return
+            self._serve_path(frame_path)
+            return
         if re.fullmatch(r"/api/jobs/[^/]+/preview", path):
             job_id = path.split("/")[3]
             preview_asset = self.server.state.get_job_preview_asset(job_id)
@@ -720,6 +879,16 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 self._write_json(payload, status=HTTPStatus.CREATED)
                 return
 
+            if path == "/api/auto-calibrate":
+                self._write_json(self.server.state.auto_calibrate_source(str(body.get("source") or "")))
+                return
+
+            if re.fullmatch(r"/api/jobs/[^/]+/approve-calibration", path):
+                job_id = path.split("/")[3]
+                payload = self.server.state.approve_calibration(job_id, body.get("calibration"))
+                self._write_json(payload)
+                return
+
             if re.fullmatch(r"/api/jobs/[^/]+/stop", path):
                 job_id = path.split("/")[3]
                 payload = self.server.state.stop_job(job_id)
@@ -741,7 +910,9 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 corners_px = body.get("corners_px")
                 if not isinstance(corners_px, list) or len(corners_px) != 4:
                     raise RuntimeError("corners_px must contain exactly four [x, y] points.")
-                result = self.server.state.save_corners(filename, corners_px)
+                extras = {key: body[key] for key in ("hive_boxes_px", "exclude_px", "flower_boxes_px")
+                          if key in body}
+                result = self.server.state.save_corners(filename, corners_px, extras)
                 self._write_json(result, status=HTTPStatus.CREATED)
                 return
         except RuntimeError as exc:

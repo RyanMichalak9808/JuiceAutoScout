@@ -15,7 +15,11 @@ Controls:
                   space just above/around them where balls fly in.
     - X         — add an exclusion rectangle (two clicks), e.g. around the
                   on-screen clock or any overlay covering the field
-    - C         — clear all exclusion rectangles
+    - F         — add a FLOWER box (two clicks): its yellow top ring and
+                  POLLEN placed in it are ignored for shot detection
+    - A         — automatic field detection (corners, HIVE, FLOWER and
+                  overlay boxes) as a starting point
+    - C         — clear all exclusion rectangles and FLOWER boxes
     - B         — clear both HIVE boxes
     - ENTER / S — save and exit
     - ESC / Q   — quit without saving (ESC cancels a box being drawn)
@@ -105,16 +109,21 @@ def _rect_to_poly(p0, p1):
 
 
 class CornerEditor:
-    def __init__(self, frame, corners, hive_boxes=None, excludes=None):
+    def __init__(self, frame, corners, hive_boxes=None, excludes=None, flowers=None, video_path=None):
         self.cv2     = _require("cv2", "opencv-python")
         self.np      = _require("numpy")
-        self.orig    = frame.copy()
+        # gray border so corners outside the picture can be placed
+        self.pad     = int(0.25 * max(frame.shape[:2]))
+        self.orig    = self.cv2.copyMakeBorder(frame, self.pad, self.pad, self.pad, self.pad,
+                                               self.cv2.BORDER_CONSTANT, value=(60, 60, 60))
         self.corners = [list(c) for c in corners]  # [[x,y], ...]
         self.h, self.w = frame.shape[:2]
 
         # Extra calibration shapes (image pixel polygons)
         self.hive_boxes = dict(hive_boxes or {})     # {"red": [[x,y]x4], "blue": ...}
         self.excludes   = [list(p) for p in (excludes or [])]
+        self.flowers    = [list(p) for p in (flowers or [])]
+        self.video_path = video_path
         # Rectangle drawing state: queue of targets still to draw, e.g.
         # [("hive", "red"), ("hive", "blue")] or [("exclude", None)]
         self.rect_queue = []
@@ -144,18 +153,23 @@ class CornerEditor:
     # ── coordinate helpers ────────────────────────────────────────
     def _img_to_view(self, ix, iy):
         """Image pixel → display pixel."""
-        vx = (ix - self.pan_x) * self.zoom
-        vy = (iy - self.pan_y) * self.zoom
+        vx = (ix + self.pad - self.pan_x) * self.zoom
+        vy = (iy + self.pad - self.pan_y) * self.zoom
         return int(vx), int(vy)
 
     def _view_to_img(self, vx, vy):
         """Display pixel → image pixel."""
-        ix = vx / self.zoom + self.pan_x
-        iy = vy / self.zoom + self.pan_y
+        ix = vx / self.zoom + self.pan_x - self.pad
+        iy = vy / self.zoom + self.pan_y - self.pad
         return ix, iy
 
     def _clamp_corner(self, x, y):
         return max(0, min(self.w - 1, x)), max(0, min(self.h - 1, y))
+
+    def _clamp_field_corner(self, x, y):
+        # field corners may lie outside the picture (inside the gray border)
+        return (max(-self.pad, min(self.w - 1 + self.pad, x)),
+                max(-self.pad, min(self.h - 1 + self.pad, y)))
 
     # ── mouse callback ────────────────────────────────────────────
     def _mouse_cb(self, event, vx, vy, flags, param):
@@ -175,6 +189,9 @@ class CornerEditor:
                 if kind == "hive":
                     self.hive_boxes[color] = poly
                     print("[INFO] {} HIVE box set.".format(color))
+                elif kind == "flower":
+                    self.flowers.append(poly)
+                    print("[INFO] FLOWER box added ({} total).".format(len(self.flowers)))
                 else:
                     self.excludes.append(poly)
                     print("[INFO] Exclusion area added ({} total).".format(len(self.excludes)))
@@ -196,7 +213,7 @@ class CornerEditor:
 
         elif event == cv2.EVENT_MOUSEMOVE:
             if self.dragging is not None:
-                x, y = self._clamp_corner(int(ix), int(iy))
+                x, y = self._clamp_field_corner(int(ix), int(iy))
                 self.corners[self.dragging] = [x, y]
             elif self.panning and self.pan_start is not None:
                 dx = (vx - self.pan_start[0]) / self.zoom
@@ -233,8 +250,8 @@ class CornerEditor:
     def _render(self):
         cv2, np = self.cv2, self.np
         # Build zoomed/panned view
-        view_h = int(self.h * self.zoom)
-        view_w = int(self.w * self.zoom)
+        view_h = int(self.orig.shape[0] * self.zoom)
+        view_w = int(self.orig.shape[1] * self.zoom)
         # Determine the crop from orig that maps to the view window
         # We'll just resize a subregion for efficiency
         display = cv2.resize(self.orig, (view_w, view_h), interpolation=cv2.INTER_LINEAR)
@@ -278,6 +295,9 @@ class CornerEditor:
             cv2.polylines(display, [pts], True, box_colors.get(color, (255, 255, 255)), 2, cv2.LINE_AA)
             cv2.putText(display, "{} HIVE".format(color), (int(pts[0][0]) + 3, int(pts[0][1]) + 16),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, box_colors.get(color, (255, 255, 255)), 1)
+        for poly in self.flowers:
+            pts = np.array([self._img_to_view(*p) for p in poly], dtype=np.int32)
+            cv2.polylines(display, [pts], True, (60, 200, 60), 1, cv2.LINE_AA)
         for poly in self.excludes:
             pts = np.array([self._img_to_view(*p) for p in poly], dtype=np.int32)
             overlay = display.copy()
@@ -292,11 +312,11 @@ class CornerEditor:
         # HUD
         if self.rect_queue:
             kind, color = self.rect_queue[0]
-            what = "{} HIVE box".format(color) if kind == "hive" else "exclusion area"
+            what = "{} HIVE box".format(color) if kind == "hive" else ("FLOWER box" if kind == "flower" else "exclusion area")
             step = "first corner" if self.rect_first is None else "opposite corner"
             mode_line = "Drawing {}: click {}  (ESC cancels)".format(what, step)
         else:
-            mode_line = "H = HIVE boxes  |  X = exclusion box  |  C/B = clear excl./HIVEs"
+            mode_line = "A = auto  |  H = HIVEs  |  X = ignore box  |  F = FLOWER  |  C/B = clear"
         lines = [
             "Drag corners to field boundaries",
             "Scroll to zoom  |  Right-drag to pan",
@@ -310,6 +330,23 @@ class CornerEditor:
             cv2.putText(display, line, (10, y),     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 180), 1)
 
         return display
+
+    def _auto_detect(self):
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from autoscout.field_detect import FieldCalibrator
+        print("[INFO] Detecting the field automatically...")
+        result = FieldCalibrator(self.cv2, self.np).calibrate_video(self.video_path)
+        if result is None:
+            print("[WARN] Automatic detection failed; place the corners by hand.")
+            return
+        bl, br, tr, tl = result["corners_px"]
+        self.corners = [list(tl), list(tr), list(br), list(bl)]
+        self.hive_boxes = dict(result.get("hive_boxes_px") or {})
+        self.excludes = [list(p) for p in (result.get("exclude_px") or [])]
+        self.flowers = [list(p) for p in (result.get("flower_boxes_px") or [])]
+        a = result["auto"]
+        print("[INFO] Auto: {} | {}/4 corners visible | confidence {}. Corners outside the "
+              "picture: zoom out (scroll) to see them.".format(a["method"], a["visible_corners"], a["confidence"]))
 
     # ── main loop ─────────────────────────────────────────────────
     def run(self):
@@ -343,7 +380,14 @@ class CornerEditor:
                 print("[INFO] Click two opposite corners of the area to exclude.")
             elif key in (ord('c'), ord('C')):
                 self.excludes = []
-                print("[INFO] Exclusion areas cleared.")
+                self.flowers = []
+                print("[INFO] Exclusion areas and FLOWER boxes cleared.")
+            elif key in (ord('f'), ord('F')):
+                self.rect_queue = [("flower", None)]
+                self.rect_first = None
+                print("[INFO] Click two opposite corners of a FLOWER box.")
+            elif key in (ord('a'), ord('A')) and self.video_path:
+                self._auto_detect()
             elif key in (ord('b'), ord('B')):
                 self.hive_boxes = {}
                 print("[INFO] HIVE boxes cleared.")
@@ -382,7 +426,7 @@ def main():
     frame = get_middle_frame(args.video, args.frame)
     h, w  = frame.shape[:2]
     corners = default_corners(w, h)
-    hive_boxes, excludes = {}, []
+    hive_boxes, excludes, flowers = {}, [], []
     if not args.fresh and os.path.exists(args.output):
         try:
             with open(args.output) as f:
@@ -393,11 +437,12 @@ def main():
                 corners = [list(tl), list(tr), list(br), list(bl)]
             hive_boxes = existing.get("hive_boxes_px") or {}
             excludes = existing.get("exclude_px") or []
+            flowers = existing.get("flower_boxes_px") or []
             print("[INFO] Loaded existing calibration from {}".format(args.output))
         except (OSError, ValueError) as exc:
             print("[WARN] Could not read {}: {}".format(args.output, exc))
 
-    editor  = CornerEditor(frame, corners, hive_boxes, excludes)
+    editor  = CornerEditor(frame, corners, hive_boxes, excludes, flowers, video_path=args.video)
     result  = editor.run()
 
     if result is None:
@@ -414,6 +459,8 @@ def main():
         data["hive_boxes_px"] = editor.hive_boxes
     if editor.excludes:
         data["exclude_px"] = editor.excludes
+    if editor.flowers:
+        data["flower_boxes_px"] = editor.flowers
     with open(args.output, "w") as f:
         json.dump(data, f, indent=2)
 

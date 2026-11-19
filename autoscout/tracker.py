@@ -111,6 +111,9 @@ class RobotTracker:
         self._shot_region_mask = None
         self.hive_boxes: Dict[str, object] = {}   # color -> int32 polygon (N,1,2)
         self.exclude_polys: List[object] = []
+        self.flower_polys: List[object] = []
+        self._allowed_mask = None
+        self._person_mask = None
         self._init_wait_frames = 0
         self._init_history: List[List[Tuple[float, float]]] = []
         # Typical single-robot blob area / (18 in robot size)^2; learned at
@@ -214,7 +217,44 @@ class RobotTracker:
             cv2.fillPoly(shot_region, [above], 255)
         for ex in self.exclude_polys:
             cv2.fillPoly(shot_region, [ex], 0)
+        # FLOWERS: their yellow tops and POLLEN placed in them are not shots.
+        self.flower_polys = [
+            np.array(pts, dtype=np.int32).reshape(-1, 1, 2)
+            for pts in (extras.get("flower_boxes_px") or []) if pts and len(pts) >= 3
+        ]
+        for fp_ in self.flower_polys:
+            cv2.fillPoly(shot_region, [fp_], 0)
+        for box in self.hive_boxes.values():   # HIVE boxes always stay searchable
+            cv2.fillPoly(shot_region, [box], 255)
+        for ex in self.exclude_polys:
+            cv2.fillPoly(shot_region, [ex], 0)
         self._shot_region_mask = shot_region
+
+        # "Allowed" area for things standing on the field: the floor quad,
+        # extended upward without limit (robots at the back wall stick out
+        # above it in the image), plus a small margin. Foreground blobs that
+        # are mostly OUTSIDE it (left/right of the side walls or in front of
+        # the front wall) are people - referees, drive teams - not robots.
+        def _up(p, q):
+            # point on line p->q (q is the front corner) far above the image
+            dx, dy = p[0] - q[0], p[1] - q[1]
+            t = (-(h * 2.0) - q[1]) / dy if abs(dy) > 1e-6 else 0.0
+            return (q[0] + t * dx, q[1] + t * dy)
+        mpx = max(4, int(round(w / 64.0)))
+        far_l = _up(tl, bl)
+        far_r = _up(tr, br)
+        allowed_poly = np.array([
+            (far_l[0] - mpx, far_l[1]), (far_r[0] + mpx, far_r[1]),
+            (br[0] + mpx, br[1] + mpx), (bl[0] - mpx, bl[1] + mpx)], dtype=np.float64)
+        # lowest image row that is not covered by a bottom overlay band
+        self._usable_bottom = h - 1
+        for ex in self.exclude_polys:
+            pts = ex.reshape(-1, 2)
+            if pts[:, 1].max() >= h - 3 and pts[:, 0].min() <= 2 and pts[:, 0].max() >= w - 3:
+                self._usable_bottom = min(self._usable_bottom, int(pts[:, 1].min()) - 1)
+        self._allowed_mask = np.zeros((h, w), dtype=np.uint8)
+        cv2.fillPoly(self._allowed_mask, [np.round(allowed_poly).astype(np.int32)], 255)
+        self._person_mask = None
 
         # Band around the front wall (bottom edge BL-BR) for the rail join.
         self._front_band = None
@@ -1551,6 +1591,9 @@ class RobotTracker:
         diff = cv2.absdiff(frame, bg)
         gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
         _, fg = cv2.threshold(gray, self.FG_THRESH, 255, cv2.THRESH_BINARY)
+        self._person_mask = self._off_field_people(fg)
+        if self._person_mask is not None:
+            fg = cv2.bitwise_and(fg, cv2.bitwise_not(self._person_mask))
         fg = cv2.bitwise_and(fg, field_mask)
         fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, self._kern)
         fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN,  self._kern)
@@ -1576,6 +1619,73 @@ class RobotTracker:
 
         return fg
 
+    def _off_field_people(self, raw_fg):
+        """Mask of foreground blobs that are mostly outside the field walls
+        (left, right or in front): referees and people, including the parts
+        of them that overlap the field in the image."""
+        if not season.FILTER_OFF_FIELD_PEOPLE or getattr(self, "_allowed_mask", None) is None:
+            return None
+        cv2, np = self.cv2, self.np
+        k = max(3, int(round(raw_fg.shape[1] / 128.0)) | 1)
+        blobs = cv2.morphologyEx(raw_fg, cv2.MORPH_CLOSE,
+                                 cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+        n, labels, stats, _ = cv2.connectedComponentsWithStats(blobs)
+        if n <= 1:
+            return None
+        outside = cv2.bitwise_and(blobs, cv2.bitwise_not(self._allowed_mask))
+        out_counts = np.bincount(labels[outside > 0], minlength=n)
+        robot_area = max(self._robot_max_px * self._robot_max_px * self._single_area_ratio, 1.0)
+        person_ids = [
+            i for i in range(1, n)
+            if out_counts[i] >= season.PERSON_OUTSIDE_FRAC * stats[i, cv2.CC_STAT_AREA]
+            and out_counts[i] >= season.PERSON_MIN_ROBOT_AREAS * robot_area
+        ]
+        mask = np.zeros_like(raw_fg)
+        # Much taller than any robot at that spot: a person standing on or in
+        # front of the field (e.g. a referee next to the camera).
+        tall_ids = []
+        if season.PERSON_MAX_ROBOT_HEIGHTS:
+            for i in range(1, n):
+                x, y, bw, bh, area = stats[i]
+                if area < robot_area:
+                    continue
+                # height of the part of the blob inside the field area: a
+                # robot is at most about one robot size tall there, a person
+                # standing in front of the camera much more
+                comp_in = (labels[y:y + bh, x:x + bw] == i) & (self._allowed_mask[y:y + bh, x:x + bw] > 0)
+                rows = np.nonzero(comp_in.any(axis=1))[0]
+                if len(rows) == 0:
+                    continue
+                in_h = rows[-1] - rows[0] + 1
+                # only people standing in front of the camera: they reach the
+                # bottom of the usable picture
+                if y + rows[-1] < self._usable_bottom - 6:
+                    continue
+                local = self._robot_px_at(x + bw / 2.0, y + rows[-1])
+                if in_h > season.PERSON_MAX_ROBOT_HEIGHTS * local:
+                    tall_ids.append(i)
+            for i in tall_ids:
+                mask[labels == i] = 255
+        if not person_ids and not tall_ids:
+            return None
+        for i in person_ids:
+            x, y, bw, bh = stats[i, :4]
+            comp = labels[y:y + bh, x:x + bw] == i
+            if y + bh - 1 >= self._usable_bottom - 6:
+                # a person standing at the front edge, reaching the bottom of
+                # the picture: all of them (legs over the field included)
+                mask[y:y + bh, x:x + bw][comp] = 255
+                continue
+            out = comp & (self._allowed_mask[y:y + bh, x:x + bw] == 0)
+            # Inside the field, only the part of the person directly ABOVE
+            # where they stand outside it (a referee in front of the camera)
+            # is removed. Things beside the crowd at the side walls - usually
+            # robots touching people in the image - are kept.
+            below = np.flip(np.maximum.accumulate(np.flip(out, axis=0), axis=0), axis=0)
+            person = comp & (out | below)
+            mask[y:y + bh, x:x + bw][person] = 255
+        return cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+
     def _scaled_odd_kernel(self, frac: float, min_size: int):
         cv2 = self.cv2
         size = max(min_size, int(round(self._robot_max_px * frac)))
@@ -1583,7 +1693,39 @@ class RobotTracker:
             size += 1
         return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size))
 
-    def _ball_color_mask(self, frame, diff_gray=None):
+    def is_glitch_frame(self, frame) -> bool:
+        """Camera cut, flash or broadcast transition: most of the field differs
+        from the background at once. Such frames are skipped entirely."""
+        if self._bg is None or self._field_mask is None:
+            return False
+        cv2, np = self.cv2, self.np
+        small = cv2.resize(frame, (frame.shape[1] // 4, frame.shape[0] // 4), interpolation=cv2.INTER_AREA)
+        bg = cv2.resize(self._bg, (small.shape[1], small.shape[0]), interpolation=cv2.INTER_AREA)
+        mask = cv2.resize(self._field_mask, (small.shape[1], small.shape[0]), interpolation=cv2.INTER_NEAREST) > 0
+        if not mask.any():
+            return False
+        diff = cv2.cvtColor(cv2.absdiff(small, bg), cv2.COLOR_BGR2GRAY) > self.FG_THRESH
+        if float(diff[mask].mean()) <= season.GLITCH_FIELD_CHANGED_FRAC:
+            return False
+        # A cut/flash changes the whole field; a person in front of the
+        # camera only part of it. Require every quarter of the field to change.
+        ys, xs = np.nonzero(mask)
+        my, mx = float(np.median(ys)), float(np.median(xs))
+        for qy in (ys < my, ys >= my):
+            for qx in (xs < mx, xs >= mx):
+                sel = qy & qx
+                if sel.sum() and float(diff[ys[sel], xs[sel]].mean()) < 0.35:
+                    return False
+        return True
+
+    def ball_mask_only(self, frame) -> None:
+        """Update only the moving-ball mask (_last_ball_mask) for a frame the
+        robot tracker skips, so shots are followed at the full frame rate."""
+        if self._bg is None:
+            return
+        self._ball_color_mask(frame, None, shot_only=True)
+
+    def _ball_color_mask(self, frame, diff_gray=None, shot_only: bool = False):
         """
         Builds two masks from the scoring-element colors (season.py):
 
@@ -1614,16 +1756,22 @@ class RobotTracker:
 
         # Moving-ball mask for shot detection.
         if diff_gray is None:
-            diff_gray = cv2.cvtColor(cv2.absdiff(frame, self._bg), cv2.COLOR_BGR2GRAY)
+            bg_now, _mask = self._background_and_mask()
+            diff_gray = cv2.cvtColor(cv2.absdiff(frame, bg_now), cv2.COLOR_BGR2GRAY)
         _, moving = cv2.threshold(diff_gray, self.BALL_MOTION_THRESH, 255, cv2.THRESH_BINARY)
         shot = cv2.bitwise_and(color, moving)
         region = self._shot_region_mask if self._shot_region_mask is not None else self._field_mask
         shot = cv2.bitwise_and(shot, region)
+        person = getattr(self, "_person_mask", None)
+        if person is not None:
+            shot = cv2.bitwise_and(shot, cv2.bitwise_not(person))
         if self.BALL_SHOT_CLOSE_PX and self.BALL_SHOT_CLOSE_PX > 1:
             k = cv2.getStructuringElement(
                 cv2.MORPH_ELLIPSE, (self.BALL_SHOT_CLOSE_PX, self.BALL_SHOT_CLOSE_PX))
             shot = cv2.morphologyEx(shot, cv2.MORPH_CLOSE, k)
         self._last_ball_mask = shot
+        if shot_only:
+            return None
 
         # Suppression mask for robot segmentation.
         mask = cv2.bitwise_and(color, self._field_mask)

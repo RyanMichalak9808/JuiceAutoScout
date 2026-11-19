@@ -28,7 +28,7 @@ The repo currently contains several user-facing tools:
 - `auto_scout.py`: runnable tracker entrypoint, exports, and CLI.
 - `dashboard_server.py`: starts the local dashboard server.
 - `autoscout/`: tracker implementation package.
-  Includes `season.py`, `hive.py`, `tracker.py`, `shot.py`, `runtime.py`, `geometry.py`, `models.py`, `helpers.py`, `wpilog.py`, `ftc_events.py`, `hardware.py`, and `dashboard_server.py`.
+  Includes `season.py`, `field_detect.py`, `hive.py`, `tracker.py`, `shot.py`, `runtime.py`, `geometry.py`, `models.py`, `helpers.py`, `wpilog.py`, `ftc_events.py`, `hardware.py`, and `dashboard_server.py`.
 - `dashboard_static/`: no-build dashboard front-end assets served locally by the Python dashboard server.
 - `util/`: shared cross-tool helpers.
   Includes `juice_log.py` and `jlog.js`.
@@ -203,6 +203,7 @@ Most implementation details now live in `autoscout/`.
 ### `autoscout/` package layout
 
 - `autoscout/season.py`: game-specific settings for the current season (BIOBUZZ): ball colors, HIVE sides, field image, and camera-geometry switches. Start here when adapting to a new game.
+- `autoscout/field_detect.py`: `FieldCalibrator`, automatic field calibration (floor-level corners with 2-4 visible, HIVE / FLOWER / overlay boxes).
 - `autoscout/hive.py`: `HiveTipDetector`, HIVE tip detection from the calibrated HIVE boxes.
 - `autoscout/match_start.py`: match start candidates from robot motion / POLLEN (used by `tools/find_match_start.py`).
 - `autoscout/tracker.py`: `RobotTracker`, foreground segmentation, blob extraction, assignment, merge handling, and track-state updates.
@@ -967,6 +968,14 @@ How well it works on the Piper Meet examples (640x360):
 - DECODE example: duplicates fell from 46% to 0% and impossible jumps from 37 to 5
 
 The q9 three-way swap at 34-46 s (labels rotating between the purple robot and the two silver robots while hidden behind the red HIVE) is fixed by appearance correction. Labels are not guaranteed correct everywhere: when robots of similar color are hidden together, the appearance evidence can be weak and a correction can be wrong. Hand-labeled references (`--manual-reference-csv`, made with `tools/manual_tracker.html`) give the strongest appearance model, and higher-resolution footage helps most.
+
+### 23c. Automatic field calibration and approval
+
+See CHANGELOG.md section 7 for the method. Output keys are the same as `field_corners.json` plus `flower_boxes_px` (ignored for shots) and `auto` (method, visible corners, confidence, notes). Run alone with `auto_scout.py --calibrate-only`; the dashboard runs it first for every match and waits in **Needs Approval** (`POST /api/jobs/<id>/approve-calibration` with the edited calibration starts tracking). `POST /api/auto-calibrate {"source": "workspace:/workspace/<video>"}` backs the Calibration tab's Auto-Detect button.
+
+### 23d. Shot detection (BIOBUZZ, vertical shots)
+
+Balls are tracked on every source frame. A track is a shot when it rises at least `SHOT_MIN_RISE_PX` (14 px at 640 wide), with at least `SHOT_MIN_UP_STEP_RATIO` of its steps upward and sideways travel at most `SHOT_MAX_LATERAL_PER_RISE` x its rise. Prediction includes `GRAVITY_PX_PER_FRAME2`, and the association window is `GATE_X_PX` x `GATE_Y_PX` (taller, growing with speed). A shot is **made** when the ball reaches the CELL zone (`CELL_ZONE_FRAC` of the HIVE box from the top) and is not then seen falling out below the box, or settles there. It is **missed** when it rises to CELL height without going in, or falls back out. Shooter: the visible robot nearest the extrapolated launch point within `SHOT_MAX_START_ROBOTS` robot sizes, else `unknown`. Balls first seen inside a CELL never count as launches.
 
 ### 24. HIVE tip detection (`autoscout/hive.py`)
 

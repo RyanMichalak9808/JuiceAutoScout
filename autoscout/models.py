@@ -107,6 +107,7 @@ class BallTrack:
     last_goal_entry_point: Optional[Tuple[float, float]] = None
     approached_goal: bool = False
     resolved: bool = False
+    result: str = ""
 
     @property
     def last_point(self) -> Optional[Tuple[int, float, float]]:

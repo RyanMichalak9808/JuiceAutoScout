@@ -5,7 +5,7 @@ const AUTO_QUEUE_RATE_LIMIT_RESET_MS = 30 * 60 * 1000;
 const AUTO_QUEUE_RATE_LIMIT_BASE_COOLDOWN_MS = 2 * 60 * 1000;
 const AUTO_QUEUE_RATE_LIMIT_MAX_COOLDOWN_MS = 20 * 60 * 1000;
 const AUTO_QUEUE_TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled"]);
-const AUTO_QUEUE_ACTIVE_STATUSES = new Set(["queued", "running", "stopping"]);
+const AUTO_QUEUE_ACTIVE_STATUSES = new Set(["queued", "running", "stopping", "awaiting_approval"]);
 const DEFAULT_JOB_DURATION_MS = 9 * 60 * 1000;
 const PROCESS_STAGE_WEIGHTS = {
   "Loading Match Footage": 0.14,
@@ -44,6 +44,10 @@ const state = {
   autoQueueLast429At: 0,
   autoQueueHandledRateLimitedJobIds: [],
   processJobPollInFlight: false,
+  approval: {
+    jobId: null,
+    editor: null,
+  },
   calibration: {
     videoUrl: null,
     sourceMode: "none",
@@ -123,6 +127,16 @@ function bindDom() {
   dom.calibrationCanvas = document.getElementById("calibrationCanvas");
   dom.calibrationVideo = document.getElementById("calibrationVideo");
   dom.cornersPreview = document.getElementById("cornersPreview");
+  dom.approvalPanel = document.getElementById("approvalPanel");
+  dom.approvalInfo = document.getElementById("approvalInfo");
+  dom.approvalCanvas = document.getElementById("approvalCanvas");
+  dom.approvalApproveButton = document.getElementById("approvalApproveButton");
+  dom.approvalResetButton = document.getElementById("approvalResetButton");
+  dom.approvalDeleteButton = document.getElementById("approvalDeleteButton");
+  dom.calibModeButtons = document.querySelectorAll("[data-calib-mode]");
+  dom.calibAutoButton = document.getElementById("calibAutoButton");
+  dom.calibDeleteButton = document.getElementById("calibDeleteButton");
+  dom.calibResetButton = document.getElementById("calibResetButton");
   dom.settingsForm = document.getElementById("settingsForm");
   dom.settingScrapeWorkers = document.getElementById("settingScrapeWorkers");
   dom.settingParallelJobs = document.getElementById("settingParallelJobs");
@@ -152,6 +166,21 @@ function bindEvents() {
   dom.frameSliderInput.addEventListener("input", handleFrameScrubPreview);
   dom.downloadCornersButton.addEventListener("click", downloadCornersJson);
   dom.saveCornersButton.addEventListener("click", saveCornersInRepo);
+  dom.calibModeButtons.forEach((button) => {
+    button.addEventListener("click", () => setCalibrationMode(button.dataset.calibMode));
+  });
+  dom.calibAutoButton.addEventListener("click", autoDetectCalibration);
+  document.querySelectorAll("[data-approval-mode]").forEach((button) => {
+    button.addEventListener("click", () => approvalEditor().setMode(button.dataset.approvalMode));
+  });
+  dom.approvalApproveButton.addEventListener("click", approveCurrentCalibration);
+  dom.approvalResetButton.addEventListener("click", () => {
+    state.approval.jobId = null;   // reload the detected calibration
+    renderApprovalPanel(latestJobForMatch(currentProcessMatch()));
+  });
+  dom.approvalDeleteButton.addEventListener("click", () => approvalEditor().deleteSelected());
+  dom.calibDeleteButton.addEventListener("click", () => calibEditor().deleteSelected());
+  dom.calibResetButton.addEventListener("click", () => calibEditor().resetCorners());
   dom.calibrationVideo.addEventListener("loadedmetadata", handleCalibrationMetadata);
   dom.calibrationVideo.addEventListener("loadeddata", drawCalibrationFrame);
   dom.calibrationVideo.addEventListener("canplay", handleCalibrationCanPlay);
@@ -160,9 +189,6 @@ function bindEvents() {
   dom.frameSliderInput.addEventListener("pointerdown", beginCalibrationSliderDrag);
   dom.frameSliderInput.addEventListener("pointerup", endCalibrationSliderDrag);
   dom.frameSliderInput.addEventListener("pointercancel", endCalibrationSliderDrag);
-  dom.calibrationCanvas.addEventListener("mousedown", beginCornerDrag);
-  window.addEventListener("mousemove", continueCornerDrag);
-  window.addEventListener("mouseup", endCornerDrag);
   dom.settingsForm.addEventListener("submit", saveSettings);
   window.addEventListener("hashchange", syncRouteFromHash);
   document.querySelectorAll("[data-route]").forEach((button) => {
@@ -736,6 +762,7 @@ function renderProcessView() {
   }
 
   renderProcessPreview(job);
+  renderApprovalPanel(job);
 
   const stats = [
     statCard("Status", meta.label),
@@ -764,6 +791,63 @@ function renderProcessView() {
   dom.processLogs.textContent = job && job.log_tail && job.log_tail.length
     ? job.log_tail.join("\n")
     : "No process output yet.";
+}
+
+function approvalEditor() {
+  if (!state.approval.editor) {
+    state.approval.editor = new window.CalibEditor(dom.approvalCanvas, {});
+  }
+  return state.approval.editor;
+}
+
+function renderApprovalPanel(job) {
+  if (!job || job.status !== "awaiting_approval") {
+    dom.approvalPanel.classList.add("hidden");
+    return;
+  }
+  dom.approvalPanel.classList.remove("hidden");
+  const calib = job.calibration || {};
+  const auto = calib.auto || {};
+  dom.approvalInfo.textContent = auto.confidence === "failed"
+    ? "Automatic field detection failed for this match. Place the four corners by hand, then approve."
+    : `Detected: ${auto.method || "?"} | ${auto.visible_corners ?? "?"}/4 corners visible | confidence ${auto.confidence || "?"}. `
+      + (auto.confidence === "high" ? "Usually fine - check the corners." : "Please check carefully.");
+  if (state.approval.jobId === job.job_id) {
+    return;   // keep the user's edits while the view refreshes
+  }
+  state.approval.jobId = job.job_id;
+  const editor = approvalEditor();
+  const image = new Image();
+  image.onload = () => {
+    editor.width = 0;
+    editor.setSource(image, image.naturalWidth, image.naturalHeight);
+    editor.setCalibration(calib);
+  };
+  image.src = `/api/jobs/${job.job_id}/calibration-frame?ts=${Date.now()}`;
+}
+
+async function approveCurrentCalibration() {
+  const job = latestJobForMatch(currentProcessMatch());
+  if (!job || job.status !== "awaiting_approval") {
+    return;
+  }
+  const calibration = approvalEditor().getCalibration();
+  if (!calibration.corners_px || calibration.corners_px.length !== 4) {
+    dom.approvalInfo.textContent = "Place all four field corners first.";
+    return;
+  }
+  try {
+    dom.approvalApproveButton.disabled = true;
+    const payload = await apiPost(`/api/jobs/${job.job_id}/approve-calibration`, { calibration });
+    state.approval.jobId = null;
+    mergeJobIntoState(payload);
+    await refreshJobs();
+    renderProcessView();
+  } catch (error) {
+    dom.approvalInfo.textContent = error.message;
+  } finally {
+    dom.approvalApproveButton.disabled = false;
+  }
 }
 
 function statCard(label, value) {
@@ -1026,7 +1110,8 @@ async function startMatchProcessing(match, options = {}) {
       source_type: "youtube",
       url: match.video_url,
       output_dir: outputDir,
-      corners: state.examples?.default_corners_path || "",
+      // no corners: the server detects the field and waits for approval
+      corners: "",
       debug: state.settings?.default_debug_frames,
       debug_video: state.settings?.default_debug_video,
       debug_every: state.settings?.default_debug_every,
@@ -1176,6 +1261,11 @@ function resetCalibrationState() {
   }
   state.calibration.videoUrl = null;
   state.calibration.corners = [];
+  if (state.calibration.editor) {
+    state.calibration.editor.width = 0;
+    state.calibration.editor.corners = [];
+    state.calibration.editor.boxes = [];
+  }
   state.calibration.draggingIndex = null;
   state.calibration.frameReady = false;
   state.calibration.seekRequestId += 1;
@@ -1234,130 +1324,64 @@ function handleCalibrationSeeked() {
   dom.calibrationStatus.textContent = `Showing frame at ${dom.calibrationVideo.currentTime.toFixed(2)}s`;
 }
 
+function calibEditor() {
+  if (!state.calibration.editor) {
+    state.calibration.editor = new window.CalibEditor(dom.calibrationCanvas, {
+      onChange: () => updateCornerPreview(),
+    });
+  }
+  return state.calibration.editor;
+}
+
 function drawCalibrationFrame() {
-  const canvas = dom.calibrationCanvas;
-  const ctx = canvas.getContext("2d");
   const width = dom.calibrationVideo.videoWidth;
   const height = dom.calibrationVideo.videoHeight;
   if (!width || !height) {
     return;
   }
-  canvas.width = width;
-  canvas.height = height;
-  ctx.clearRect(0, 0, width, height);
-  ctx.drawImage(dom.calibrationVideo, 0, 0, width, height);
-  if (!state.calibration.corners.length) {
-    state.calibration.corners = defaultCalibrationCorners(width, height);
-  }
-  drawCornerOverlay(ctx, state.calibration.corners);
+  calibEditor().setSource(dom.calibrationVideo, width, height);
   state.calibration.frameReady = true;
   updateCornerPreview();
 }
 
-function defaultCalibrationCorners(width, height) {
-  const mx = width * 0.2;
-  const my = height * 0.2;
-  const px = width * 0.8;
-  const py = height * 0.8;
-  return [
-    { x: mx, y: my, label: "TL", color: "#e6b422" },
-    { x: px, y: my, label: "TR", color: "#37b5e5" },
-    { x: px, y: py, label: "BR", color: "#d95b43" },
-    { x: mx, y: py, label: "BL", color: "#4f80ff" },
-  ];
-}
-
-function drawCornerOverlay(ctx, corners) {
-  ctx.save();
-  ctx.lineWidth = 2;
-  ctx.strokeStyle = "rgba(255,255,255,0.92)";
-  ctx.fillStyle = "rgba(20, 20, 20, 0.18)";
-  ctx.beginPath();
-  corners.forEach((corner, index) => {
-    if (index === 0) {
-      ctx.moveTo(corner.x, corner.y);
-    } else {
-      ctx.lineTo(corner.x, corner.y);
-    }
-  });
-  ctx.closePath();
-  ctx.fill();
-  ctx.stroke();
-  corners.forEach((corner) => {
-    ctx.fillStyle = corner.color;
-    ctx.beginPath();
-    ctx.arc(corner.x, corner.y, 10, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = "#ffffff";
-    ctx.stroke();
-    ctx.fillStyle = "#ffffff";
-    ctx.font = "bold 15px Poppins, sans-serif";
-    ctx.fillText(corner.label, corner.x + 12, corner.y - 12);
-  });
-  ctx.restore();
-}
-
-function beginCornerDrag(event) {
-  if (!state.calibration.frameReady) {
-    return;
-  }
-  const point = canvasPointFromEvent(event);
-  let bestIndex = -1;
-  let bestDistance = Number.POSITIVE_INFINITY;
-  state.calibration.corners.forEach((corner, index) => {
-    const distance = Math.hypot(point.x - corner.x, point.y - corner.y);
-    if (distance < bestDistance) {
-      bestDistance = distance;
-      bestIndex = index;
-    }
-  });
-  if (bestIndex >= 0 && bestDistance <= 26) {
-    state.calibration.draggingIndex = bestIndex;
-  }
-}
-
-function continueCornerDrag(event) {
-  if (state.calibration.draggingIndex == null) {
-    return;
-  }
-  const point = canvasPointFromEvent(event);
-  const corner = state.calibration.corners[state.calibration.draggingIndex];
-  corner.x = clamp(point.x, 0, dom.calibrationCanvas.width - 1);
-  corner.y = clamp(point.y, 0, dom.calibrationCanvas.height - 1);
-  drawCalibrationFrame();
-}
-
-function endCornerDrag() {
-  state.calibration.draggingIndex = null;
-}
-
-function canvasPointFromEvent(event) {
-  const rect = dom.calibrationCanvas.getBoundingClientRect();
-  const scaleX = dom.calibrationCanvas.width / rect.width;
-  const scaleY = dom.calibrationCanvas.height / rect.height;
-  return {
-    x: (event.clientX - rect.left) * scaleX,
-    y: (event.clientY - rect.top) * scaleY,
-  };
-}
-
 function currentCornersPayload() {
-  if (state.calibration.corners.length !== 4) {
+  if (!state.calibration.editor) {
     return { corners_px: [] };
   }
-  return {
-    corners_px: [
-      [round2(state.calibration.corners[3].x), round2(state.calibration.corners[3].y)],
-      [round2(state.calibration.corners[2].x), round2(state.calibration.corners[2].y)],
-      [round2(state.calibration.corners[1].x), round2(state.calibration.corners[1].y)],
-      [round2(state.calibration.corners[0].x), round2(state.calibration.corners[0].y)],
-    ],
-  };
+  return state.calibration.editor.getCalibration();
 }
 
 function updateCornerPreview() {
   dom.cornersPreview.textContent = JSON.stringify(currentCornersPayload(), null, 2);
+}
+
+function setCalibrationMode(mode) {
+  calibEditor().setMode(mode);
+  const labels = {
+    hive_red: "Drag a box around the red HIVE (both CELLS, both tip positions).",
+    hive_blue: "Drag a box around the blue HIVE (both CELLS, both tip positions).",
+    flower: "Drag a box around a FLOWER (column and yellow top ring).",
+    exclude: "Drag a box over an area to ignore (overlay, clock, people).",
+  };
+  dom.calibrationStatus.textContent = labels[mode] || "Drag the corners and boxes. Select a box and press Delete to remove it.";
+}
+
+async function autoDetectCalibration() {
+  const source = state.calibration.selectedSource;
+  if (!source) {
+    dom.calibrationStatus.textContent = "Auto-detect needs a loaded system video (not an uploaded file).";
+    return;
+  }
+  dom.calibrationStatus.textContent = "Detecting the field... (10-30 s)";
+  try {
+    const payload = await apiPost("/api/auto-calibrate", { source: source });
+    calibEditor().setCalibration(payload.calibration);
+    updateCornerPreview();
+    const a = payload.calibration.auto || {};
+    dom.calibrationStatus.textContent = `Auto-detected: ${a.method || "?"} (confidence ${a.confidence || "?"}, ${a.visible_corners ?? "?"}/4 corners visible). Check and adjust before saving.`;
+  } catch (error) {
+    dom.calibrationStatus.textContent = error.message;
+  }
 }
 
 function requestCalibrationSeek(targetTime) {
@@ -1465,9 +1489,9 @@ async function saveCornersInRepo() {
     const payload = currentCornersPayload();
     const result = await apiPost("/api/save-corners", {
       filename: dom.cornersFilenameInput.value.trim() || "field_corners.json",
-      corners_px: payload.corners_px,
+      ...payload,
     });
-    dom.calibrationStatus.textContent = `Saved corners to ${result.path}`;
+    dom.calibrationStatus.textContent = `Saved calibration to ${result.path}`;
   } catch (error) {
     dom.calibrationStatus.textContent = error.message;
   }
@@ -1606,6 +1630,13 @@ function matchStatusMeta(match) {
       label: "Upcoming",
       className: "upcoming",
       detail: "No discoverable video clip yet. This likely means the match is in the future or the public page has no clip.",
+    };
+  }
+  if (job && job.status === "awaiting_approval") {
+    return {
+      label: "Needs Approval",
+      className: "queued",
+      detail: `Field calibration for job ${job.job_id} is waiting for approval in the Process view.`,
     };
   }
   if (job && (job.status === "running" || job.status === "stopping")) {
@@ -1806,7 +1837,7 @@ function mergeJobIntoState(job) {
 }
 
 function isJobActive(job) {
-  return Boolean(job && (job.status === "running" || job.status === "stopping"));
+  return Boolean(job && (job.status === "running" || job.status === "stopping" || job.status === "awaiting_approval"));
 }
 
 function handleAutoQueueJobUpdates(previousJobs, nextJobs) {

@@ -186,3 +186,33 @@ AUTO_ROBOT_AREA_SAMPLES = 30
 # same pile a moment later (release/rejoin cycles), and overall label jumps
 # and duplicates got slightly worse on all three example videos.
 MERGE_UNSEEN_RELEASE_S = 0.0
+
+# Detect the field automatically (autoscout/field_detect.py) when no
+# --corners file is given. The dashboard shows the result for approval
+# before a match is processed. False = old edge-based detector.
+AUTO_FIELD_CALIBRATION = True
+
+# People off the field (referees, drive teams, a referee standing in front of
+# the camera): foreground blobs with at least PERSON_OUTSIDE_FRAC of their
+# area outside the field walls (left, right or in front; above the back wall
+# is allowed because robots stick up there) and at least
+# PERSON_MIN_ROBOT_AREAS robot-areas outside are removed from robot AND ball
+# detection - including the part of them that overlaps the field.
+FILTER_OFF_FIELD_PEOPLE = True
+PERSON_OUTSIDE_FRAC = 0.5
+PERSON_MIN_ROBOT_AREAS = 0.8
+
+# FLOWER positions (field coordinates in inches, origin at the far-left
+# corner, x to the right, y toward the camera - the same frame as the field
+# image) and size, used to place FLOWER boxes during automatic calibration.
+FLOWER_POSITIONS_IN = [(48.1, 2.5), (141.5, 48.1), (2.5, 95.8), (95.8, 141.5)]
+FLOWER_RADIUS_IN = 3.5
+FLOWER_HEIGHT_IN = 24.0
+
+# Frames where more than this fraction of the field differs from the
+# background (camera cut, flash, broadcast transition) are skipped.
+GLITCH_FIELD_CHANGED_FRAC = 0.55
+# Foreground blobs that reach the bottom of the picture and whose part inside
+# the field area is taller than this many robot sizes (measured where they
+# touch the floor) are people standing in front of the camera. 0 = off.
+PERSON_MAX_ROBOT_HEIGHTS = 2.6

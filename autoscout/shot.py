@@ -12,12 +12,32 @@ class ShotDetector:
     # BIOBUZZ POLLEN (2.8 in) is much smaller than DECODE balls.
     BALL_MIN_CONTOUR_AREA_PX = 3.0
     BALL_MAX_CONTOUR_AREA_PX = 200.0
+    BALL_MAX_ELONGATION = 3.5          # bbox long side / short side (motion blur allowed)
+    # Ball tracking runs on every source frame (pixels at 640 px width).
+    GRAVITY_PX_PER_FRAME2 = 0.6        # ball acceleration downward in the image
+    GATE_X_PX = 7.0                    # association window around the prediction
+    GATE_Y_PX = 9.0
+    GATE_NEW_X_PX = 7.0                # for a track with one sample, per frame
+    GATE_NEW_UP_PX = 24.0
+    GATE_NEW_DOWN_PX = 6.0
+    REFS_EVERY_FRAMES = 1
+    TRAIL_KEEP_FRAMES = 20             # keep finished shot trails in the debug video
+    # A shot: the ball rises at least SHOT_MIN_RISE_PX, mostly in upward
+    # steps, and moves sideways at most SHOT_MAX_LATERAL_PER_RISE x its rise.
+    SHOT_MIN_SAMPLES = 3
+    SHOT_MIN_RISE_PX = 14.0
+    SHOT_MIN_UP_STEP_RATIO = 0.6
+    SHOT_MAX_LATERAL_PER_RISE = 1.5
+    SHOT_MAX_START_ROBOTS = 1.6        # shooter within this many robot sizes of the launch point
+    # The CELL zone of a HIVE box: its upper part. A ball reaching it counts
+    # as entering the HIVE.
+    CELL_ZONE_FRAC = 0.8
     BALL_ASSOC_DIST_PX = 34.0
     # Max jump (px at REF_FRAME_WIDTH) from the predicted position for a ball
     # already marked launched. 124 chained unrelated POLLEN into one "shot"
     # on BIOBUZZ footage.
     BALL_ASSOC_DIST_FAST_PX = 70.0
-    BALL_MAX_MISSING = 12
+    BALL_MAX_MISSING = 8               # source frames a ball may be unseen
     SHOT_MAX_START_DIST_PX = 84.0
     SHOT_MIN_DISP_PX = 8.0
     SHOT_MIN_SPEED_PX = 2.0
@@ -37,8 +57,8 @@ class ShotDetector:
     # Clear HIVE cells: a made ball stays visible and comes to rest inside the
     # target. Resolve as made once it has moved less than GOAL_SETTLE_PX per
     # frame for GOAL_SETTLE_FRAMES frames inside the target polygon.
-    GOAL_SETTLE_FRAMES = 4
-    GOAL_SETTLE_PX = 2.0
+    GOAL_SETTLE_FRAMES = 8
+    GOAL_SETTLE_PX = 1.5
     # Color-based HIVE fallback (only used without hive_boxes_px):
     GOAL_TOP_BAND_FRAC = 0.55          # search the top part of the frame
     GOAL_MAX_TOP_FRAC = 0.35           # target top edge must be above this
@@ -63,6 +83,13 @@ class ShotDetector:
         self._last_event_time_by_robot: Dict[int, float] = {}
         self._ready = False
         self._lin = 1.0   # linear pixel scale vs REF_FRAME_WIDTH
+        self._refs = []
+        self._refs_frame = -10**9
+        self._recent_launched: List[BallTrack] = []
+        self._seen_event_keys = set()
+        self._cell_zone_bottom: Dict[str, float] = {}
+        self._last_frame = 0
+        self._fps = 30.0
 
     def _px(self, value: float) -> float:
         return value * self._lin
@@ -87,6 +114,9 @@ class ShotDetector:
                   "Draw HIVE boxes with tools/calibrate.py (key H).")
             return
         self._goal_openings = openings
+        for color, poly in openings.items():
+            ys = poly.reshape(-1, 2)[:, 1]
+            self._cell_zone_bottom[color] = float(ys.min() + self.CELL_ZONE_FRAC * (ys.max() - ys.min()))
         if tracker.hive_boxes:
             side_pad, down = self.BOX_APPROACH_SIDE_PAD_FRAC, self.BOX_APPROACH_DOWN_FRAC
         else:
@@ -101,86 +131,93 @@ class ShotDetector:
 
     def update(self, frame_num: int, match_time_s: float, poses, tracker,
                hive_moving=None) -> List[ShotEvent]:
-        """hive_moving: optional callable(color) -> bool, True while that
-        HIVE is tipping (balls inside it then move and must not count as
-        launches)."""
+        """Call for EVERY source frame (tracker.ball_mask_only() on frames the
+        robot tracker skips) so fast vertical shots are followed frame by
+        frame. hive_moving: optional callable(color) -> bool, True while that
+        HIVE is tipping."""
         if not self._ready or tracker._last_ball_mask is None or tracker._H_inv is None:
             return []
         self._hive_moving = hive_moving
-
+        if poses is not None and (frame_num - self._refs_frame >= self.REFS_EVERY_FRAMES or not self._refs):
+            self._refs = self._robot_refs(poses, tracker)
+            self._refs_frame = frame_num
         detections = self._extract_ball_detections(tracker._last_ball_mask)
-        robot_refs = self._robot_refs(poses, tracker)
-        self._associate_tracks(detections, robot_refs, frame_num)
+        self._associate_tracks(detections, frame_num)
 
         events = []
         for track in list(self._tracks.values()):
-            if not track.samples or track.resolved:
+            if track.resolved:
                 continue
-            self._update_goal_state(track)
-            self._maybe_mark_launched(track, robot_refs)
-            if track.launched and self._settled_in_goal(track):
+            if track.missing_frames == 0:
+                self._update_goal_state(track)
+                self._maybe_mark_launched(track, tracker)
+            ended = track.missing_frames > self.BALL_MAX_MISSING
+            settled = track.launched and self._settled_in_goal(track)
+            if ended or settled:
                 event = self._resolve_track(track, frame_num, match_time_s)
                 if event is not None and not self._is_duplicate_event(event):
                     events.append(event)
-                del self._tracks[track.track_id]
-                continue
-            if track.missing_frames > self.BALL_MAX_MISSING:
-                event = self._resolve_track(track, frame_num, match_time_s)
-                if event is not None and not self._is_duplicate_event(event):
-                    events.append(event)
+                if track.launched:
+                    self._recent_launched.append(track)
+                    self._recent_launched = self._recent_launched[-12:]
                 del self._tracks[track.track_id]
         return events
 
     def draw_debug(self, dbg) -> None:
         if not self._ready:
             return
-        cv2 = self.cv2
-        for color, poly in self._goal_approaches.items():
-            cv_color = (255, 180, 60) if color == "blue" else (80, 180, 255)
-            cv2.polylines(dbg, [poly], True, cv_color, 1, cv2.LINE_AA)
+        cv2, np = self.cv2, self.np
         for color, poly in self._goal_openings.items():
             cv_color = (255, 80, 0) if color == "blue" else (0, 80, 255)
             cv2.polylines(dbg, [poly], True, cv_color, 2, cv2.LINE_AA)
-        for track in self._tracks.values():
-            pts = [(int(round(x)), int(round(y))) for _f, x, y in track.samples[-8:]]
+            rim = int(round(self._cell_zone_bottom[color]))
+            pts = poly.reshape(-1, 2)
+            cv2.line(dbg, (int(pts[:, 0].min()), rim), (int(pts[:, 0].max()), rim), cv_color, 1, cv2.LINE_AA)
+        tracks = list(self._tracks.values()) + [t for t in self._recent_launched if t.samples
+                                                 and self._last_frame - t.samples[-1][0] <= self.TRAIL_KEEP_FRAMES]
+        for track in tracks:
+            pts = [(int(round(x)), int(round(y))) for _f, x, y in track.samples[-30:]]
+            if len(pts) < 2 and not track.launched:
+                continue
+            if track.launched:
+                col = (0, 255, 255)                         # yellow: shot
+                if track.result == "made":
+                    col = (0, 255, 0)
+                elif track.result == "missed":
+                    col = (0, 0, 255)
+            else:
+                col = (150, 150, 150)                       # gray: ball not (yet) a shot
             if len(pts) >= 2:
-                cv2.polylines(
-                    dbg,
-                    [self.np.array(pts, dtype=self.np.int32).reshape(-1, 1, 2)],
-                    False,
-                    (0, 255, 255) if track.launched else (180, 180, 180),
-                    2,
-                    cv2.LINE_AA,
-                )
-            if pts:
-                px, py = pts[-1]
-                label = "S{}".format(track.shooter_id) if track.launched and track.shooter_id is not None else "b"
-                if track.entered_goal:
-                    label += ":goal"
-                cv2.putText(dbg, label, (px + 4, py - 4),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+                cv2.polylines(dbg, [np.array(pts, dtype=np.int32).reshape(-1, 1, 2)], False, col,
+                              2 if track.launched else 1, cv2.LINE_AA)
+            px, py = pts[-1]
+            if track.launched:
+                label = "S{}".format(track.shooter_id) if track.shooter_id is not None and track.shooter_id >= 0 else "S?"
+                if track.result:
+                    label += " " + track.result
+                cv2.putText(dbg, label, (px + 4, py - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.4, col, 1)
 
     def _extract_ball_detections(self, ball_mask):
         cv2 = self.cv2
         cnts, _ = cv2.findContours(ball_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         detections = []
+        amin = self._area(self.BALL_MIN_CONTOUR_AREA_PX)
+        amax = self._area(self.BALL_MAX_CONTOUR_AREA_PX)
         for c in cnts:
-            area = float(cv2.contourArea(c))
-            if len(c) < 3:
-                # contourArea is 0 for 1-2 pixel blobs; use the pixel count.
-                area = float(len(c))
-            if area < self._area(self.BALL_MIN_CONTOUR_AREA_PX) or area > self._area(self.BALL_MAX_CONTOUR_AREA_PX):
+            area = max(float(cv2.contourArea(c)), float(len(c)) if len(c) < 3 else 0.0)
+            if area < amin or area > amax:
+                continue
+            x, y, bw, bh = cv2.boundingRect(c)
+            # a ball (possibly motion-blurred along its flight) is compact;
+            # long thin shapes are edges of people, rails, robot parts
+            if max(bw, bh) > self.BALL_MAX_ELONGATION * min(bw, bh) + self._px(3):
                 continue
             M = cv2.moments(c)
-            if M["m00"] <= 0:
-                pts = c.reshape(-1, 2)
-                cx = float(pts[:, 0].mean())
-                cy = float(pts[:, 1].mean())
-                detections.append((cx, cy, area))
-                continue
-            cx = float(M["m10"] / M["m00"])
-            cy = float(M["m01"] / M["m00"])
-            detections.append((cx, cy, area))
+            if M["m00"] > 0:
+                cx, cy = M["m10"] / M["m00"], M["m01"] / M["m00"]
+            else:
+                cx, cy = x + bw / 2.0, y + bh / 2.0
+            detections.append((float(cx), float(cy), area))
         return detections
 
     def _robot_refs(self, poses, tracker):
@@ -192,65 +229,71 @@ class ShotDetector:
             refs.append({
                 "id": rid,
                 "img": (ix, iy),
+                "size": tracker._robot_px_at(ix, iy),
                 "center": (float(pose.x_center_in), float(pose.y_center_in)),
             })
         return refs
 
-    def _associate_tracks(self, detections, robot_refs, frame_num: int) -> None:
-        unmatched_tracks = set(self._tracks.keys())
-        unmatched_dets = set(range(len(detections)))
+    def _predict(self, track: BallTrack, frame_num: int):
+        f1, x1, y1 = track.samples[-1]
+        dt = max(1, frame_num - f1)
+        if len(track.samples) < 2:
+            return x1, y1, dt, None
+        f0, x0, y0 = track.samples[-2]
+        step = max(1, f1 - f0)
+        vx, vy = (x1 - x0) / step, (y1 - y0) / step
+        g = self._px(self.GRAVITY_PX_PER_FRAME2)
+        return x1 + vx * dt, y1 + vy * dt + 0.5 * g * dt * dt, dt, (vx, vy)
+
+    def _associate_tracks(self, detections, frame_num: int) -> None:
+        self._last_frame = frame_num
         pairs = []
         for tid, track in self._tracks.items():
-            pred_x, pred_y = self._predict_track_point(track)
-            max_dist = self._px(self.BALL_ASSOC_DIST_FAST_PX if track.launched else self.BALL_ASSOC_DIST_PX)
-            for di, (cx, cy, _area) in enumerate(detections):
-                d = math.hypot(cx - pred_x, cy - pred_y)
-                if d <= max_dist:
-                    pairs.append((d, tid, di))
-        pairs.sort()
-        for _d, tid, di in pairs:
-            if tid not in unmatched_tracks or di not in unmatched_dets:
+            px, py, dt, vel = self._predict(track, frame_num)
+            if vel is None:
+                # one sample so far: the ball may go anywhere upward fast, or
+                # drift slowly; allow a tall window biased upward
+                gx = self._px(self.GATE_NEW_X_PX) * dt + self._px(4)
+                up = self._px(self.GATE_NEW_UP_PX) * dt + self._px(4)
+                down = self._px(self.GATE_NEW_DOWN_PX) * dt + self._px(4)
+                for di, (cx, cy, _a) in enumerate(detections):
+                    dx, dy = cx - px, cy - py
+                    if abs(dx) <= gx and -up <= dy <= down:
+                        cost = (dx / gx) ** 2 + (dy / (up if dy < 0 else down)) ** 2
+                        pairs.append((cost, tid, di))
                 continue
-            cx, cy, _area = detections[di]
+            vx, vy = vel
+            gx = self._px(self.GATE_X_PX) + 0.35 * abs(vx) * dt
+            gy = self._px(self.GATE_Y_PX) + 0.5 * abs(vy) * dt + self._px(self.GRAVITY_PX_PER_FRAME2) * dt * dt
+            for di, (cx, cy, _a) in enumerate(detections):
+                dx, dy = cx - px, cy - py
+                if abs(dx) <= gx and abs(dy) <= gy:
+                    pairs.append(((dx / gx) ** 2 + (dy / gy) ** 2, tid, di))
+        pairs.sort()
+        used_t, used_d = set(), set()
+        for _cost, tid, di in pairs:
+            if tid in used_t or di in used_d:
+                continue
+            cx, cy, _a = detections[di]
             track = self._tracks[tid]
             track.samples.append((frame_num, cx, cy))
             track.missing_frames = 0
-            unmatched_tracks.remove(tid)
-            unmatched_dets.remove(di)
-
-        for tid in unmatched_tracks:
-            self._tracks[tid].missing_frames += 1
-
-        for di in unmatched_dets:
-            cx, cy, _area = detections[di]
-            nearest_id = None
-            nearest_dist = None
-            nearest_img = None
-            nearest_center = None
-            for ref in robot_refs:
-                dist = math.hypot(cx - ref["img"][0], cy - ref["img"][1])
-                if nearest_dist is None or dist < nearest_dist:
-                    nearest_dist = dist
-                    nearest_id = ref["id"]
-                    nearest_img = ref["img"]
-                    nearest_center = ref["center"]
+            used_t.add(tid)
+            used_d.add(di)
+        for tid, track in self._tracks.items():
+            if tid not in used_t:
+                track.missing_frames = frame_num - track.samples[-1][0]
+        for di, (cx, cy, _a) in enumerate(detections):
+            if di in used_d:
+                continue
             self._tracks[self._next_track_id] = BallTrack(
-                track_id=self._next_track_id,
-                samples=[(frame_num, cx, cy)],
-                shooter_id=nearest_id,
-                shooter_img=nearest_img,
-                shooter_dist_px=nearest_dist,
-                shooter_pos_center_in=nearest_center,
-            )
+                track_id=self._next_track_id, samples=[(frame_num, cx, cy)])
             self._next_track_id += 1
 
-    def _predict_track_point(self, track: BallTrack) -> Tuple[float, float]:
-        if len(track.samples) < 2:
-            _f, x, y = track.samples[-1]
-            return x, y
-        _f1, x1, y1 = track.samples[-1]
-        _f0, x0, y0 = track.samples[-2]
-        return x1 + (x1 - x0), y1 + (y1 - y0)
+    def _in_cell_zone(self, color: str, x: float, y: float) -> bool:
+        poly = self._goal_openings[color]
+        return (self.cv2.pointPolygonTest(poly, (float(x), float(y)), False) >= 0
+                and y <= self._cell_zone_bottom[color])
 
     def _update_goal_state(self, track: BallTrack) -> None:
         frame_idx, x, y = track.samples[-1]
@@ -259,8 +302,8 @@ class ShotDetector:
                 track.approached_goal = True
                 if not track.goal_color:
                     track.goal_color = color
-        for color, poly in self._goal_openings.items():
-            if self.cv2.pointPolygonTest(poly, (float(x), float(y)), False) >= 0:
+        for color in self._goal_openings:
+            if self._in_cell_zone(color, x, y):
                 track.entered_goal = True
                 track.entered_goal_frames += 1
                 if track.first_goal_entry_frame is None:
@@ -269,183 +312,131 @@ class ShotDetector:
                 track.goal_color = color
                 break
 
-    def _starts_in_moving_goal(self, track: BallTrack) -> bool:
-        moving = getattr(self, "_hive_moving", None)
-        first = track.first_point
-        if moving is None or first is None:
-            return False
-        _f, x, y = first
-        return any(
-            self.cv2.pointPolygonTest(poly, (float(x), float(y)), False) >= 0 and moving(color)
-            for color, poly in self._goal_openings.items()
-        )
+    def _starts_in_cells(self, track: BallTrack) -> Optional[str]:
+        _f, x, y = track.samples[0]
+        for color in self._goal_openings:
+            if self._in_cell_zone(color, x, y):
+                return color
+        return None
 
-    def _maybe_mark_launched(self, track: BallTrack, robot_refs) -> None:
-        if track.launched or len(track.samples) < self.SHOT_MIN_LIFE_FRAMES:
+    def _maybe_mark_launched(self, track: BallTrack, tracker) -> None:
+        """A shot = a ball that rises clearly: net upward travel of at least
+        SHOT_MIN_RISE_PX, mostly upward steps, more vertical than sideways.
+        Shots this season are steep, so vertical motion is what counts."""
+        if track.launched or len(track.samples) < self.SHOT_MIN_SAMPLES:
             return
-        first = track.first_point
-        last = track.last_point
-        if first is None or last is None:
+        if self._starts_in_cells(track) is not None:
+            # balls first seen inside a CELL (resting, bouncing, or moving
+            # with a tipping HIVE) are not launches
             return
-        # Balls first seen inside a HIVE while it tips are balls in the
-        # moving CELLS (or falling out), not launches.
-        if self._starts_in_moving_goal(track):
+        ys = [y for _f, _x, y in track.samples]
+        xs = [x for _f, x, _y in track.samples]
+        k_top = int(min(range(len(ys)), key=lambda k: ys[k]))
+        rise = ys[0] - ys[k_top]
+        if rise < self._px(self.SHOT_MIN_RISE_PX):
             return
-        shooter_ref, shooter_score = self._select_shooter(track, robot_refs)
-        if shooter_ref is None or shooter_score > self._px(self.SHOT_MAX_START_DIST_PX):
+        lateral = abs(xs[k_top] - xs[0])
+        if lateral > self.SHOT_MAX_LATERAL_PER_RISE * rise:
             return
-        f0, x0, y0 = first
-        f1, x1, y1 = last
-        dt = max(f1 - f0, 1)
-        disp = math.hypot(x1 - x0, y1 - y0)
-        avg_speed = disp / dt
-        if disp < self._px(self.SHOT_MIN_DISP_PX) or avg_speed < self._px(self.SHOT_MIN_SPEED_PX):
-            return
-        if (y1 - y0) > -self._px(self.SHOT_MIN_UPWARD_PX):
-            return
-        if not self._has_consistent_upward_motion(track):
-            return
-        if not self._moving_away_from_shooter(track):
-            return
-        track.shooter_id = shooter_ref["id"]
-        track.shooter_img = shooter_ref["img"]
-        track.shooter_dist_px = shooter_score
-        track.shooter_pos_center_in = shooter_ref["center"]
+        steps = list(zip(ys[:k_top], ys[1:k_top + 1]))
+        if steps:
+            up = sum(1 for a, b in steps if b < a)
+            if up / len(steps) < self.SHOT_MIN_UP_STEP_RATIO:
+                return
         track.launched = True
-
-    def _resolve_track(self, track: BallTrack, frame_num: int, match_time_s: float) -> Optional[ShotEvent]:
-        if not track.launched or track.shooter_id is None or track.shooter_pos_center_in is None:
-            return None
-        if self._confirmed_goal_make(track):
-            result = "made"
-        elif track.approached_goal or self._track_reached_top(track):
-            result = "missed"
+        shooter, dist = self._select_shooter(track)
+        if shooter is not None:
+            track.shooter_id = shooter["id"]
+            track.shooter_img = shooter["img"]
+            track.shooter_dist_px = dist
+            track.shooter_pos_center_in = shooter["center"]
         else:
-            return None
-        sx, sy = track.shooter_pos_center_in
-        track.resolved = True
-        return ShotEvent(
-            shooter_id=track.shooter_id,
-            result=result,
-            shot_x_in=float(sx),
-            shot_y_in=float(sy),
-            frame_num=frame_num,
-            timestamp_s=match_time_s,
-            goal_color=track.goal_color,
-        )
+            track.shooter_id = -1
 
-    def _has_consistent_upward_motion(self, track: BallTrack) -> bool:
-        if len(track.samples) < 3:
-            return False
-        negative_steps = 0
-        total_steps = 0
-        for (_f0, _x0, y0), (_f1, _x1, y1) in zip(track.samples[:-1], track.samples[1:]):
-            total_steps += 1
-            if y1 < y0:
-                negative_steps += 1
-        return total_steps > 0 and (negative_steps / total_steps) >= self.SHOT_MIN_NEGATIVE_STEP_RATIO
-
-    def _select_shooter(self, track: BallTrack, robot_refs):
-        if not robot_refs:
-            return None, float("inf")
-        first = track.first_point
-        if first is None:
-            return None, float("inf")
-        _f0, x0, y0 = first
-        origin_x, origin_y = x0, y0
+    def _select_shooter(self, track: BallTrack):
+        """Robot the ball left from: the visible robot nearest to where the
+        flight started (extrapolated a little backward), preferring robots
+        below the ball. Within SHOT_MAX_START_ROBOTS robot sizes, else none."""
+        if not self._refs:
+            return None, None
+        _f0, x0, y0 = track.samples[0]
         if len(track.samples) >= 2:
-            deltas = []
-            for (_fa, xa, ya), (_fb, xb, yb) in zip(track.samples[:-1], track.samples[1:]):
-                deltas.append((xb - xa, yb - ya))
-                if len(deltas) >= 3:
-                    break
-            if deltas:
-                avg_dx = sum(dx for dx, _dy in deltas) / len(deltas)
-                avg_dy = sum(dy for _dx, dy in deltas) / len(deltas)
-                origin_x = x0 - 1.35 * avg_dx
-                origin_y = y0 - 1.35 * avg_dy
-
-        best_ref = None
-        best_score = float("inf")
-        for ref in robot_refs:
+            _f1, x1, y1 = track.samples[1]
+            x0, y0 = x0 - 0.7 * (x1 - x0), y0 - 0.7 * (y1 - y0)
+        best, best_score = None, None
+        for ref in self._refs:
             rx, ry = ref["img"]
-            dist_origin = math.hypot(origin_x - rx, origin_y - ry)
-            dist_first = math.hypot(x0 - rx, y0 - ry)
-            above_penalty = max(0.0, (y0 - ry) - self._px(6.0)) * 0.75
-            score = 0.7 * dist_origin + 0.3 * dist_first + above_penalty
-            if score < best_score:
-                best_score = score
-                best_ref = ref
-        return best_ref, best_score
-
-    def _moving_away_from_shooter(self, track: BallTrack) -> bool:
-        if track.shooter_img is None or len(track.samples) < 2:
-            return False
-        first = track.first_point
-        last = track.last_point
-        if first is None or last is None:
-            return False
-        sx, sy = track.shooter_img
-        _f0, x0, y0 = first
-        _f1, x1, y1 = last
-        start_dist = math.hypot(x0 - sx, y0 - sy)
-        last_dist = math.hypot(x1 - sx, y1 - sy)
-        return last_dist >= start_dist + self._px(self.SHOT_MIN_AWAY_FROM_SHOOTER_PX)
-
-    def _confirmed_goal_make(self, track: BallTrack) -> bool:
-        if not track.entered_goal:
-            return False
-        if track.entered_goal_frames >= self.GOAL_CONFIRM_MIN_FRAMES:
-            return True
-        if track.first_goal_entry_frame is None:
-            return False
-        if track.missing_frames <= self.GOAL_ENTRY_MAX_MISSING and self._track_finished_inside_goal(track):
-            return True
-        return False
-
-    def _track_finished_inside_goal(self, track: BallTrack) -> bool:
-        if not track.goal_color or track.last_goal_entry_point is None:
-            return False
-        poly = self._goal_openings.get(track.goal_color)
-        if poly is None:
-            return False
-        x, y = track.last_goal_entry_point
-        return self.cv2.pointPolygonTest(poly, (float(x), float(y)), False) >= 0
-
-    def _is_duplicate_event(self, event: ShotEvent) -> bool:
-        last_time = self._last_event_time_by_robot.get(event.shooter_id)
-        if last_time is not None and (event.timestamp_s - last_time) < self.SHOT_DEDUP_TIME_S:
-            return True
-        self._last_event_time_by_robot[event.shooter_id] = event.timestamp_s
-        return False
-
-    def _track_reached_top(self, track: BallTrack) -> bool:
-        if not track.samples:
-            return False
-        top_y = min(y for _f, _x, y in track.samples)
-        goal_top = min(
-            min(poly[:, 0, 1]) for poly in self._goal_approaches.values()
-        ) if self._goal_approaches else 0.0
-        goal_bottom = max(
-            max(poly[:, 0, 1]) for poly in self._goal_approaches.values()
-        ) if self._goal_approaches else 0.0
-        return top_y <= goal_bottom + max(self._px(14.0), 0.2 * max(goal_bottom - goal_top, 1.0))
+            size = max(ref["size"], 1.0)
+            d = math.hypot(x0 - rx, (y0 - ry) * 0.7) / size   # robots are tall: forgive vertical offset
+            if y0 > ry + 0.6 * size:
+                d += 1.0                                       # ball starting well below the robot
+            if best_score is None or d < best_score:
+                best, best_score = ref, d
+        if best is None or best_score > self.SHOT_MAX_START_ROBOTS:
+            return None, None
+        return best, best_score
 
     def _settled_in_goal(self, track: BallTrack) -> bool:
         n = self.GOAL_SETTLE_FRAMES
         if not track.entered_goal or len(track.samples) < n + 1 or track.missing_frames > 0:
             return False
         recent = track.samples[-(n + 1):]
-        poly = self._goal_openings.get(track.goal_color)
-        if poly is None:
-            return False
         limit = self._px(self.GOAL_SETTLE_PX)
-        for (_fa, xa, ya), (_fb, xb, yb) in zip(recent[:-1], recent[1:]):
-            if math.hypot(xb - xa, yb - ya) > limit:
+        for (fa, xa, ya), (fb, xb, yb) in zip(recent[:-1], recent[1:]):
+            if math.hypot(xb - xa, yb - ya) > limit * max(1, fb - fa):
                 return False
-            if self.cv2.pointPolygonTest(poly, (float(xb), float(yb)), False) < 0:
+            if not self._in_cell_zone(track.goal_color, xb, yb):
                 return False
         return True
+
+    def _resolve_track(self, track: BallTrack, frame_num: int, match_time_s: float) -> Optional[ShotEvent]:
+        if not track.launched:
+            return None
+        result = None
+        if track.entered_goal and track.goal_color:
+            # made unless the ball was then seen falling out below the CELLS
+            after = [(f, x, y) for f, x, y in track.samples if track.first_goal_entry_frame is not None
+                     and f >= track.first_goal_entry_frame]
+            fell_out = False
+            poly = self._goal_openings[track.goal_color]
+            box_bottom = float(poly.reshape(-1, 2)[:, 1].max())
+            for (fa, xa, ya), (fb, xb, yb) in zip(after[:-1], after[1:]):
+                if yb > box_bottom + self._px(4) and yb > ya:
+                    fell_out = True
+                    break
+            result = "missed" if fell_out else "made"
+        elif track.approached_goal or self._track_reached_top(track):
+            result = "missed"
+        if result is None:
+            return None
+        track.resolved = True
+        track.result = result
+        sx, sy = track.shooter_pos_center_in if track.shooter_pos_center_in is not None else (float("nan"), float("nan"))
+        return ShotEvent(
+            shooter_id=track.shooter_id if track.shooter_id is not None else -1,
+            result=result,
+            shot_x_in=float(sx),
+            shot_y_in=float(sy),
+            frame_num=track.samples[0][0],
+            timestamp_s=match_time_s - (frame_num - track.samples[0][0]) / max(self._fps, 1.0),
+            goal_color=track.goal_color,
+        )
+
+    def _is_duplicate_event(self, event: ShotEvent) -> bool:
+        # Robots fire POLLEN in quick bursts, so only drop events that start
+        # in the same frame for the same robot (one ball seen as two tracks).
+        key = (event.shooter_id, event.frame_num, event.goal_color, event.result)
+        if key in self._seen_event_keys:
+            return True
+        self._seen_event_keys.add(key)
+        return False
+
+    def _track_reached_top(self, track: BallTrack) -> bool:
+        if not track.samples or not self._goal_openings:
+            return False
+        top_y = min(y for _f, _x, y in track.samples)
+        rim = max(self._cell_zone_bottom.values())
+        return top_y <= rim
 
     def _detect_goal_openings(self, background, tracker):
         """Fallback: find each alliance's scoring target by color in the

@@ -120,13 +120,19 @@ AutoScout is configured for BIOBUZZ presented by RTX. Game-specific settings liv
 - robot labels are kept through contact and while hidden: no jumping across the field, hidden robots keep their label (hollow `R#?` marker in the debug video), and each robot's look is learned so swapped labels are corrected (see DOCUMENTATION.md, "Keeping robot labels")
 - the visualizer uses `assets/biobuzz-field.png`, oriented as the camera sees the field (red on the left, far wall on top)
 
-For best results, draw the HIVE boxes and an exclusion box over the on-screen clock when calibrating:
+Field calibration is automatic: without `--corners`, AutoScout finds the floor-level field corners (even when only 2-3 are visible), the HIVE and FLOWER boxes and the overlay, and saves them as `field_corners_auto.json` with a preview image in the output folder. In the dashboard, every match first shows this calibration for approval (drag to fix, then Approve & Start Tracking). To check or fix a calibration by hand:
 
 ```bash
 python3 tools/calibrate.py path/to/match.mp4
 ```
 
-Drag the 4 corners, press `H` and click two opposite corners for the red HIVE then the blue HIVE, press `X` and click two corners around the clock, then press `S`.
+Press `A` to auto-detect, then drag the 4 corners to where the carpet meets the BOTTOM of the walls (they may lie in the gray border outside the picture). `H` draws the HIVE boxes, `F` a FLOWER box, `X` an area to ignore; `S` saves.
+
+Calibration only (no tracking):
+
+```bash
+python3 auto_scout.py --no-download --video-path match.mp4 --calibrate-only --output-dir out
+```
 
 The broadcast clock and scoreboard are not reliable (the clock can start seconds after the robots), so the pipeline never reads them; `--auto-match-bounds` was built for the DECODE overlay. Set `--start-offset` to the moment robots first move or shoot. `tools/find_match_start.py` suggests candidates from the video and saves frames around each to confirm:
 
@@ -161,7 +167,7 @@ HIVE tips are detected from the HIVE boxes and written to `hive_tips.csv`; on th
   Starts the local dashboard web server.
 - `autoscout/`
   Main Python package for the tracker internals.
-  Includes `season.py`, `hive.py`, `tracker.py`, `shot.py`, `runtime.py`, `geometry.py`, `models.py`, `helpers.py`, `wpilog.py`, `ftc_events.py`, `hardware.py`, and `dashboard_server.py`.
+  Includes `season.py`, `field_detect.py`, `hive.py`, `tracker.py`, `shot.py`, `runtime.py`, `geometry.py`, `models.py`, `helpers.py`, `wpilog.py`, `ftc_events.py`, `hardware.py`, and `dashboard_server.py`.
 - `dashboard_static/`
   No-build dashboard front-end files served by `dashboard_server.py`.
 - `util/`

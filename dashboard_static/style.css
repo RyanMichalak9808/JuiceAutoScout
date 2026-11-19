@@ -1133,3 +1133,19 @@ label {
     transform: translateX(310%);
   }
 }
+
+.approval-panel {
+  border: 2px solid #fe8f00;
+  border-radius: 12px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+.approval-panel.hidden {
+  display: none;
+}
+#approvalCanvas,
+#calibrationCanvas {
+  width: 100%;
+  height: auto;
+  display: block;
+}

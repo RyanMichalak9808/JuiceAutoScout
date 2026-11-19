@@ -7,6 +7,7 @@ This file is a running summary of the changes made to AutoScout to adapt it from
 - **New season:** POLLEN (yellow) shots into the red / blue HIVE, HIVE tip counting, and the BIOBUZZ field image.
 - **New camera:** a low, audience-side event stream (640x360, blurry) instead of the high overhead DECODE World Championship broadcast.
 - **Robot labels:** the main problem on the test videos was robot labels swapping or disappearing after collisions and behind the HIVE. Most of the tracker work went there.
+- **Shots and setup (latest round):** the shot detector was rewritten for steep, vertical shots and now follows balls on every frame. Field corners, HIVE boxes and FLOWER boxes are detected automatically for every match, and the dashboard asks for approval of that calibration before tracking starts. Referees and people off the field are filtered out of robot and ball detection.
 - **Original behavior preserved:** every new behavior is behind a switch in `autoscout/season.py`. With the switches set back to their DECODE values, the tracker reproduces the original DECODE output exactly (0 differences over 6,128 rows of `examples/joosmatch.mp4`, rechecked after every round).
 
 ## Size of the change compared with the original repo
@@ -15,32 +16,39 @@ Measured with `git diff 4d1be90 HEAD`. Example videos and images are excluded.
 
 | | Original | Now | Change |
 |---|---|---|---|
-| Code lines (`.py`, `.js`, `.html`) | 14,489 | 15,994 | **+1,688 / -183 lines, about 13% of the original code size touched; net +10%** |
-| Original lines removed or replaced | | | 183 (1.3% of the original code) |
-| Python lines | 8,025 | 9,530 | +19% |
-| `autoscout/tracker.py` | 1,490 | 2,081 | +40% |
-| `autoscout/shot.py` | 470 | 545 | +16% |
-| `auto_scout.py` | 809 | 977 | +21% |
-| New files | | | `autoscout/season.py`, `autoscout/hive.py`, `autoscout/match_start.py`, `tools/find_match_start.py`, `assets/biobuzz-field.png`, `CHANGELOG.md`, two example videos and their calibrations |
+| Code lines (`.py`, `.js`, `.html`) | 14,489 | 17,693 | **+3,729 / -525 lines, about 29% of the original code size touched; net +22%** |
+| Original lines removed or replaced | | | 525 (3.6% of the original code) |
+| Python lines | 8,025 | 10,828 | +35% |
+| `autoscout/tracker.py` | 1,490 | 2,347 | +58% |
+| `autoscout/shot.py` | 470 | 536 | +14% (most of the logic rewritten) |
+| `auto_scout.py` | 809 | 1,061 | +31% |
+| `autoscout/dashboard_server.py` | 950 | 1,132 | +19% |
+| New files | | | `autoscout/season.py`, `autoscout/field_detect.py`, `autoscout/hive.py`, `autoscout/match_start.py`, `dashboard_static/calib_editor.js`, `tools/find_match_start.py`, `assets/biobuzz-field.png`, `CHANGELOG.md`, three example videos and their calibrations |
 
-Most of the work is added code behind switches; very little original code was rewritten.
+Most of the work is added code behind switches; apart from the shot detector, little original code was rewritten.
 
 ## Processing cost per match
 
-The original and new versions were timed on the same machine (4 cores), one after the other, without `--debug-video`. Each was run twice.
+The original and new versions were timed on the same machine (4 cores), one after the other, without `--debug-video`.
 
-| Video | Original | New | Wall time | CPU time (user + sys) |
-|---|---|---|---|---|
-| `piper_q9.mp4` (BIOBUZZ, 3 min, 640x360) | 66.2-66.4 s | 73.7-75.1 s | **+11 to +14%** | **+6 to +8%** (141 -> 151 s) |
-| `joosmatch.mp4` (DECODE, 3.4 min) | 70.0 s | 75.7 s | +8% | +0% (152 -> 152 s) |
+Latest measurement (after the shot detector rewrite), `piper_q9.mp4` (BIOBUZZ, 3 min, 640x360):
+
+| Run | Wall time | CPU time (user + sys) |
+|---|---|---|
+| Original | 59.0 s | 126.6 s |
+| New, with a calibration file | 85.4 s (**+45%**) | 171.4 s (**+35%**) |
+| New, automatic calibration (no file) | 88.0 s (+49%) | 175.9 s (+39%) |
+
+Before the shot detector rewrite the overhead was +11 to +14% wall time and +6 to +8% CPU on the same video; the DECODE example was +8% wall, +0% CPU.
 
 Where the extra time goes:
 
+- **Following balls on every frame** (the largest share): a ball-only pass runs on the 2 of every 3 frames the robot tracker skips, so fast vertical shots can be followed.
+- The off-field people filter and the camera-cut check, every frame.
 - HIVE tip detection, about 1 ms per frame.
-- A second ball mask for shot detection.
 - Per-position robot size and floor-contact projection (small homography calls).
 - Robot appearance histograms for re-identification, plus the identity check.
-- Learning the two HIVE backgrounds, once per match.
+- Learning the two HIVE backgrounds and the automatic field calibration, once per match (about 3 s).
 
 `--debug-video` adds roughly the same overhead to both versions. `tools/find_match_start.py` is a separate helper and only runs when you call it (about 10-20 s per video).
 
@@ -282,13 +290,20 @@ So the current fingerprint stays as it is. Core sampling is kept as a switch, of
 - **Hand check:** on q9's first volley (3 POLLEN into the red HIVE at 10.7-10.9 s) all three shots were found from the right robot.
 - **Limit:** two or three balls flying up side by side at 640x360 are sometimes counted as one or two.
 
+**How it was checked:**
+- **Reviews:** three review passes over all changed files. They found and fixed an unused variable, a duplicate-shot check that could drop a real shot when two robots launched in the same frame, and a missing fallback when automatic calibration fails.
+- **Dashboard:** tested in a real browser: Auto-Detect, drawing boxes, saving, the approval panel with a dragged corner and an added box, and the tracking run that followed.
+- **Old behavior:** the DECODE regression (switches off) is still 0 differences over 6,128 rows.
+
 **Not yet handled:** a referee's legs that stand inside the field area and don't reach the bottom of the picture can still be detected as foreground. Tracks won't jump to them across the field, and shapes bigger than 6 robots are ignored.
 
 ## Results on the example videos
 
 | | Original / first version | Now |
 |---|---|---|
-| HIVE tips vs broadcast counter (q9 + q11 + Shanghai) | not available | 34 / 34 |
+| HIVE tips vs broadcast counter (q9 + q11 + Shanghai) | not available | 34 / 34 (also with automatic calibration) |
+| q9 first auto volley (3 POLLEN into the red HIVE), checked frame by frame | shots drawn gray, not counted | 3 / 3 found, right robot |
+| Field corners | placed by hand (bottom corners on the wall top, top corners too wide) | automatic at floor level, 2-4 corners visible |
 | q9 impossible label jumps (faster than 90 in/s) | 421 | 56 |
 | q11 impossible label jumps | 264 | 61 |
 | Duplicate labels on one robot, BIOBUZZ | 4-8% of frames | under 1% |
@@ -324,10 +339,12 @@ The switches:
 ## Known limitations
 
 - **Labels are not guaranteed correct everywhere.** When similar-looking robots (for example the two silver robots in q9) are hidden together, appearance evidence is weak and a correction can be wrong. Labels after about 54 s in q9 could not be confirmed by eye at 640x360.
-- **Shot counts are not verified shot by shot.**
+- **Shot counts are only spot-checked** (q9 first volley, a q11 stretch before a blue tip), not verified shot by shot.
+  - Two or three balls flying up side by side at 640x360 are sometimes counted as one or two shots.
   - Shots launched from behind the HIVE are mostly invisible.
   - The red and blue HIVE boxes touch, so attribution near that border is unreliable.
   - Shooter credit goes to the robot nearest the first ball sighting.
 - **The match start is set by hand** (`--start-offset`), with `tools/find_match_start.py` to help.
 - **Robots are not linked to team numbers or alliances.**
-- **Calibration is manual for each camera setup.**
+- **Automatic calibration needs a check on overhead cameras** whose front field edge is under the overlay (the Edison DECODE stream): it reports low confidence there, and the approval step is where to fix it.
+- **A referee standing in front of the camera** is mostly filtered out, but legs that overlap the field and don't reach the bottom of the picture can still show up as a foreground shape. Labels don't jump to it, and shapes bigger than 6 robots are ignored.

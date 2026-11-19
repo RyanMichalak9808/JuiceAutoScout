@@ -479,6 +479,23 @@ Cleanup deleted only the ticked stream audio and finished-match video (48 MB), a
 - Every clip has a full 10 s after the match end.
 - Each clip is about 185 s.
 
+### 15. No outside links except YouTube and FTC Events (fifteenth commit)
+
+**Searched** every file in the repo for links to outside websites: URLs, web fonts, CDN scripts, CSS `url(...)`, and protocol-relative `//` links.
+
+**Found and replaced:** the old juicerobotics.org logo was still loaded by the two browser tools, `tools/data_visualizer.html` (also embedded in the dashboard's match view) and `tools/manual_tracker.html`.
+- They now use a local copy, `tools/logo.png` (the same new logo as the dashboard).
+- Their logo sizing was updated for the wider logo.
+
+**Left as is, because the software never loads them:**
+- `http://www.w3.org/2000/svg`: an SVG namespace name, not a download;
+- the README's demo video link (documentation only);
+- the dashboard's own `http://127.0.0.1:port` address.
+
+**Checked** in a browser, recording every network request:
+- the dashboard, both tools through the dashboard, and the manual tracker opened straight from disk;
+- **zero requests outside the local computer**, and the logo loads in all of them.
+
 ## Results on the example videos
 
 | | Original / first version | Now |

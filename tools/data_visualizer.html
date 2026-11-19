@@ -113,7 +113,7 @@
 
     .brand {
       display: grid;
-      grid-template-columns: 112px minmax(0, 1fr);
+      grid-template-columns: auto minmax(0, 1fr);
       gap: 12px;
       align-items: center;
       min-width: 0;
@@ -128,8 +128,9 @@
 
     .brand-logo img {
       display: block;
-      width: 112px;
-      max-height: 40px;
+      height: 40px;
+      width: auto;
+      max-width: 180px;
       object-fit: contain;
     }
 
@@ -455,7 +456,7 @@
     <header class="topbar">
       <div class="brand" aria-label="Juice 16236 Data Visualizer">
         <div class="brand-logo">
-          <img src="https://juicerobotics.org/assets/dark/logo.png" alt="Juice 16236 Logo">
+          <img src="logo.png" alt="Juice 16236 + 9808">
         </div>
         <div>
           <div class="brand-name">AutoScout</div>

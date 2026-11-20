@@ -773,6 +773,18 @@ Tracking results (shots, tips, positions) are byte-identical to before.
 - AUTO-only and full runs on examples/piper_q9.mp4 give identical AUTO paths. Full-run tracking output is byte-identical to before.
 - Through the dashboard, Q9 and Q11 in AUTO-only mode finished in about 13 s each. The AUTO paths panel showed team 21536's two routines with consistency numbers, with no page errors.
 
+### 29. Browser icon (twenty-ninth commit)
+
+**What:** the dashboard and the two browser tools (data visualizer, manual tracker) now show the Juice drop logo as their browser tab icon. Before, they had none.
+
+**Files:**
+- `dashboard_static/favicon.png` (64 px) and `favicon-32.png`, cropped from the logo with a transparent background;
+- `favicon.ico` (16/32/48/64 px), which browsers request on their own;
+- `apple-touch-icon.png` (180 px, dark tile) for phone/tablet home screens;
+- `tools/favicon.png` for the tool pages, so they also work when opened straight from disk.
+
+**Checked:** all icon files are served by the dashboard, and the dashboard and both tools link to an icon that loads.
+
 ## Results on the example videos
 
 | | Original / first version | Now |

@@ -97,6 +97,11 @@ function bindDom() {
   dom.scoutMatchTitle = document.getElementById("scoutMatchTitle");
   dom.scoutMatchSelect = document.getElementById("scoutMatchSelect");
   dom.scoutMatchDetail = document.getElementById("scoutMatchDetail");
+  dom.autoTeamSelect = document.getElementById("autoTeamSelect");
+  dom.autoInfo = document.getElementById("autoInfo");
+  dom.autoField = document.getElementById("autoField");
+  dom.autoTable = document.getElementById("autoTable");
+  dom.autoTitle = document.getElementById("autoTitle");
   dom.eventForm = document.getElementById("eventForm");
   dom.seasonInput = document.getElementById("seasonInput");
   dom.eventCodeInput = document.getElementById("eventCodeInput");
@@ -168,6 +173,7 @@ function bindDom() {
   dom.settingDebugVideo = document.getElementById("settingDebugVideo");
   dom.settingAutoOpen = document.getElementById("settingAutoOpen");
   dom.settingTrackEveryFrame = document.getElementById("settingTrackEveryFrame");
+  dom.settingAutoOnly = document.getElementById("settingAutoOnly");
   dom.settingBatchNoApproval = document.getElementById("settingBatchNoApproval");
   dom.advancedSettingsList = document.getElementById("advancedSettingsList");
   dom.advancedSummary = document.getElementById("advancedSummary");
@@ -187,6 +193,7 @@ function bindEvents() {
   dom.reloadEventButton.addEventListener("click", reloadCurrentEvent);
   dom.splitStreamButton.addEventListener("click", splitEventStream);
   dom.scoutSortSelect.addEventListener("change", renderScouting);
+  dom.autoTeamSelect.addEventListener("change", renderAutoPaths);
   dom.advancedResetButton.addEventListener("click", () => {
     state.advancedSettings = (state.advancedSettings || []).map((x) => ({ ...x, value: x.default, changed: false }));
     renderAdvancedSettings();
@@ -991,12 +998,56 @@ function renderScouting() {
     renderScouting();
   }));
   renderScoutTeamDetail();
+  renderAutoPaths();
   // match menu
   const current = dom.scoutMatchSelect.value;
   dom.scoutMatchSelect.innerHTML = matches.map((m) => `<option value="${escapeHtmlAttr(m.dir)}">${escapeHtml(m.label)}${m.team_map_confirmed ? "" : " *"}</option>`).join("");
   if (state.scoutMatch && matches.some((m) => m.dir === state.scoutMatch)) dom.scoutMatchSelect.value = state.scoutMatch;
   else if (current && matches.some((m) => m.dir === current)) dom.scoutMatchSelect.value = current;
   renderScoutMatch();
+}
+
+const AUTO_COLORS = ["#ff8c1a", "#36c5ff", "#ff4fd8", "#7cff6b", "#ffd84a", "#b38cff", "#ff6b6b", "#4dffd2"];
+
+function renderAutoPaths() {
+  const autos = state.scouting?.team_autos || {};
+  const teams = Object.keys(autos).sort((a, b) => Number(a) - Number(b));
+  const prev = dom.autoTeamSelect.value || state.scoutTeam;
+  dom.autoTeamSelect.innerHTML = teams.map((t) => `<option value="${escapeHtmlAttr(t)}">${escapeHtml(t)} (${autos[t].matches})</option>`).join("");
+  if (prev && autos[prev]) dom.autoTeamSelect.value = prev;
+  const team = autos[dom.autoTeamSelect.value];
+  if (!team) {
+    dom.autoField.innerHTML = "";
+    dom.autoTable.innerHTML = "";
+    return;
+  }
+  const guessed = team.runs.some((r) => !r.confirmed);
+  dom.autoInfo.textContent = `Team ${team.team}: ${team.matches} AUTO run(s). Moved in ${team.moved_pct}% of them, ${Math.round((team.avg_distance_in || 0) / 12)} ft driven on average.`
+    + (team.path_spread_in != null ? ` Paths differ by ${team.path_spread_in} in on average (lower = more consistent routine).` : "")
+    + (team.start_spread_in != null ? ` Start positions within ${team.start_spread_in} in of each other.` : "")
+    + (guessed ? " * = robot-to-team mapping still guessed for that match." : "");
+  const P = (x, y) => `${(x + 72).toFixed(1)},${(y + 72).toFixed(1)}`;
+  const runs = team.runs.map((r, i) => {
+    const c = AUTO_COLORS[i % AUTO_COLORS.length];
+    const pts = r.points.map((p) => P(p[1], p[2])).join(" ");
+    const s = r.points[0], e = r.points[r.points.length - 1];
+    return `<g class="auto-run" data-i="${i}"><polyline points="${pts}" stroke="${c}" />
+      <circle cx="${s[1] + 72}" cy="${s[2] + 72}" r="3" fill="${c}" stroke="#fff" stroke-width="0.8"><title>${escapeHtml(r.match)} start</title></circle>
+      <rect x="${e[1] + 72 - 2.2}" y="${e[2] + 72 - 2.2}" width="4.4" height="4.4" fill="${c}" stroke="#000" stroke-width="0.6"><title>${escapeHtml(r.match)} end</title></rect></g>`;
+  }).join("");
+  dom.autoField.innerHTML = `<svg viewBox="0 0 144 144" class="auto-field"><image href="/assets/biobuzz-field.png" x="0" y="0" width="144" height="144" opacity="0.75" preserveAspectRatio="none"/>${runs}</svg>
+    <p class="helper-copy">Dot = start, square = end of AUTO. Far wall at the top, audience at the bottom.</p>`;
+  dom.autoTable.innerHTML = `<table class="analytics-table scout-detail"><tr><th></th><th>Match</th><th>Alliance</th><th>Start (in)</th><th>End (in)</th><th>Driven ft</th><th>Seen %</th></tr>${
+    team.runs.map((r, i) => `<tr data-i="${i}"><td><span class="auto-swatch" style="background:${AUTO_COLORS[i % AUTO_COLORS.length]}"></span></td>
+      <td>${escapeHtml(r.match)}${r.confirmed ? "" : "*"}</td><td class="${escapeHtmlAttr(r.alliance || "")}">${escapeHtml(r.alliance || "?")}</td>
+      <td>${r.start ? `${Math.round(r.start[0])}, ${Math.round(r.start[1])}` : "-"}</td><td>${r.end ? `${Math.round(r.end[0])}, ${Math.round(r.end[1])}` : "-"}</td>
+      <td>${Math.round((r.distance_in || 0) / 12)}${r.moved ? "" : " (did not move)"}</td><td>${r.visible_pct ?? "-"}</td></tr>`).join("")}</table>
+    <p class="helper-copy">Hover a row to highlight its path. Seen % = share of AUTO the robot was tracked (it can be hidden behind a HIVE).</p>`;
+  const svgRuns = dom.autoField.querySelectorAll(".auto-run");
+  dom.autoTable.querySelectorAll("tr[data-i]").forEach((tr) => {
+    tr.addEventListener("mouseenter", () => svgRuns.forEach((g) => g.classList.toggle("dim", g.dataset.i !== tr.dataset.i)));
+    tr.addEventListener("mouseleave", () => svgRuns.forEach((g) => g.classList.remove("dim")));
+  });
 }
 
 function renderScoutTeamDetail() {
@@ -1025,7 +1076,7 @@ function renderScoutMatch() {
   const m = (state.scouting?.matches || []).find((x) => x.dir === dom.scoutMatchSelect.value);
   if (!m) { dom.scoutMatchDetail.innerHTML = `<p class="helper-copy">No processed matches yet.</p>`; dom.scoutMatchTitle.textContent = "Processed match"; return; }
   state.scoutMatch = m.dir;
-  dom.scoutMatchTitle.textContent = m.label;
+  dom.scoutMatchTitle.textContent = m.label + (m.auto_only ? " (AUTO only)" : "");
   const teams = [...m.red_teams.map((t) => [t, "red"]), ...m.blue_teams.map((t) => [t, "blue"])];
   const teamSelect = (r) => `<select data-robot="${escapeHtmlAttr(r.robot)}"><option value="">-</option>${
     teams.map(([t, a]) => `<option value="${escapeHtmlAttr(t)}"${r.team === t ? " selected" : ""}>${escapeHtml(t)} (${a})</option>`).join("")}</select>`;
@@ -1043,7 +1094,7 @@ function renderScoutMatch() {
     <h3 class="scout-sub">Alliances</h3>
     <table class="analytics-table scout-detail"><tr><th>Alliance</th><th>Tips</th><th>AUTO</th><th>TELEOP</th><th>Final 60s</th><th>First tip s</th><th>Median s between</th><th>Notes</th></tr>${alliances}</table>
     <h3 class="scout-sub">HIVE tips</h3><div class="tip-row">${tips}</div>
-    <div class="scout-images">${img("shot_heatmap.png", "Shot heatmap")}${img("resource_density.png", "POLLEN on the field")}</div>
+    <div class="scout-images">${img("auto_paths.png", "AUTO paths")}${img("shot_heatmap.png", "Shot heatmap")}${img("resource_density.png", "POLLEN on the field")}</div>
     <p class="helper-copy">CSV: ${files || "none"}</p>`;
   document.getElementById("scoutSaveMap").addEventListener("click", async () => {
     const map = {};
@@ -1727,6 +1778,7 @@ function renderSettings() {
   dom.settingDebugVideo.checked = Boolean(settings.default_debug_video);
   dom.settingAutoOpen.checked = Boolean(settings.auto_open_process_view);
   dom.settingTrackEveryFrame.checked = settings.track_every_frame !== false;
+  dom.settingAutoOnly.checked = Boolean(settings.auto_paths_only);
   dom.settingBatchNoApproval.checked = settings.require_calibration_approval === false;
   dom.settingTrackingRate.value = settings.tracking_sample_rate ?? 10;
   dom.settingCropToField.checked = settings.crop_to_field !== false;
@@ -1816,6 +1868,7 @@ async function saveSettings(event) {
       default_debug_video: dom.settingDebugVideo.checked,
       auto_open_process_view: dom.settingAutoOpen.checked,
       track_every_frame: dom.settingTrackEveryFrame.checked,
+      auto_paths_only: dom.settingAutoOnly.checked,
       require_calibration_approval: !dom.settingBatchNoApproval.checked,
       tracking_sample_rate: Number(dom.settingTrackingRate.value || 10),
       crop_to_field: dom.settingCropToField.checked,

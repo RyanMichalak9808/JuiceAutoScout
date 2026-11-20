@@ -748,6 +748,31 @@ Click a team to see its matches one by one. Click one of those matches to open i
 
 Tracking results (shots, tips, positions) are byte-identical to before.
 
+### 28. AUTO path scouting (twenty-eighth commit)
+
+**Why:** robot positions are the most reliable thing the tracker produces (shots are only about 50% right), so this builds scouting on positions: where each robot starts, drives and ends in AUTO.
+
+**What:**
+- **AUTO paths for every match** (`autoscout/auto_paths.py`): each processed match gets `auto_paths.json`, `auto_paths.csv` and `auto_paths.png` (paths drawn on the field). Per robot:
+  - start and end position (median of the first and last second it's seen);
+  - the path, sampled every 0.25 s;
+  - distance driven, whether it moved (at least 12 in from its start), and how much of AUTO it was visible.
+- **Cleaning up label jumps:** a path is split wherever the robot would have moved faster than a robot can (100 in/s, with at most 0.35 s of driving allowed across a gap in tracking). Pieces shorter than 1.5 s are dropped as blips onto another robot. The first piece is always kept, since start positions matter most.
+- **AUTO-only processing mode:** Settings, Tracking, **AUTO paths only**, or `--auto-only`. Tracking stops 2 s after AUTO, about **4 times faster** (13 s vs 52 s on examples/piper_q9.mp4). The AUTO paths are identical to a full run's. `done.json` marks these matches, and they're left out of the full-match team stats, since their shots and distance only cover AUTO.
+- **AUTO paths panel (Analytics):**
+  - pick a team to see its AUTO path from every processed match on the field, one color per match;
+  - a table with start, end, distance and seen %. Hovering a row highlights its path;
+  - consistency numbers: how far the paths differ on average (lower = a more repeatable routine) and how spread out the start positions are.
+  - The match menu shows the match's AUTO paths image.
+- **Better robot-to-team guess:** a robot's alliance is now guessed from the half of the field it starts AUTO on (red left, blue right), with the HIVE it shoots into as a fallback.
+  - On Q9 and Q11 this gives a clean 2 red / 2 blue split; the HIVE guess had put 3 robots on red in Q9.
+  - Which robot is which team within an alliance is still guessed until confirmed in the match menu.
+- **Older matches:** matches processed before this get their AUTO paths built from `robot_positions.csv` when the Analytics page loads.
+
+**Checked:**
+- AUTO-only and full runs on examples/piper_q9.mp4 give identical AUTO paths. Full-run tracking output is byte-identical to before.
+- Through the dashboard, Q9 and Q11 in AUTO-only mode finished in about 13 s each. The AUTO paths panel showed team 21536's two routines with consistency numbers, with no page errors.
+
 ## Results on the example videos
 
 | | Original / first version | Now |

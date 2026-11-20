@@ -16,6 +16,7 @@ from autoscout.helpers import (
     _open_debug_video_writer,
 )
 from autoscout import season
+from autoscout import auto_paths
 from autoscout.overrides import apply as apply_setting_overrides
 from autoscout.match_timer import scan_match_bounds
 from autoscout.runtime import _make_bar, _require, install_console_output
@@ -124,6 +125,7 @@ def process_match(
     start_offset_sec=0.0,
     sample_rate_fps=10.0,
     process_every_frame=None,
+    auto_only=False,
     debug=False,
     debug_video=False,
     debug_every_n=1,
@@ -194,6 +196,12 @@ def process_match(
             start_frame,
         ))
 
+    if auto_only:
+        # scouting AUTO paths only: stop shortly after AUTO ends
+        auto_stop = start_frame + int(round((season.AUTO_END_S + 2.0) * video_fps))
+        if auto_stop < stop_frame:
+            stop_frame = auto_stop
+        print("[INFO] AUTO only: tracking stops at {:.1f}s match time.".format(season.AUTO_END_S + 2.0))
     frame_step = max(1, int(round(video_fps / sample_rate_fps)))
     if PROCESS_EVERY_SOURCE_FRAME if process_every_frame is None else process_every_frame:
         frame_step = 1
@@ -700,9 +708,20 @@ def process_match(
     print("  TIPS:   {}".format(tips_path))
     print("  SHOTS:  {}".format(shots_path))
     _print_event_summary(tip_log, shot_log)
+    try:
+        with open(csv_path, newline="") as handle:
+            auto = auto_paths.write(cv2, np, output_dir, list(csv.DictReader(handle)))
+        print("  AUTO paths: auto_paths.json, auto_paths.csv, auto_paths.png")
+        for r in auto:
+            if r["start"]:
+                print("    {} start ({:.0f}, {:.0f}) -> end ({:.0f}, {:.0f}) in | {:.0f} in driven | seen {}% of AUTO".format(
+                    r["robot"], r["start"][0], r["start"][1], r["end"][0], r["end"][1],
+                    r["distance_in"], r["visible_pct"]))
+    except Exception as exc:  # AUTO paths must never fail the run
+        print("[WARN] AUTO paths not written: {}".format(exc))
     with open(os.path.join(output_dir, "done.json"), "w") as handle:
         json.dump({"finished_at": time.time(), "frames_processed": processed,
-                   "video": os.path.abspath(video_path)}, handle, indent=2)
+                   "video": os.path.abspath(video_path), "auto_only": bool(auto_only)}, handle, indent=2)
     try:
         alliances, robots = analytics.write_all(cv2, np, output_dir, csv_path, tip_log, shot_log,
                                                 resource_sampler.samples)
@@ -1007,6 +1026,8 @@ def main():
                         help="Track robots on every source frame (ignores --sample-rate; slower)")
     parser.add_argument("--no-every-frame", dest="every_frame", action="store_false",
                         help="Track robots at --sample-rate (balls and merges are still followed every frame)")
+    parser.add_argument("--auto-only", action="store_true",
+                        help="Track only AUTO (stops 2 s after it ends) for fast AUTO path scouting")
     parser.add_argument("--no-roi", action="store_true",
                         help="Process the whole frame instead of a window around the field")
     parser.add_argument("--debug", action="store_true",
@@ -1097,6 +1118,7 @@ def main():
         start_offset_sec=args.start_offset,
         sample_rate_fps=args.sample_rate,
         process_every_frame=args.every_frame,
+        auto_only=args.auto_only,
         debug=(args.debug or args.debug_video),
         debug_video=args.debug_video,
         debug_every_n=args.debug_every,

@@ -367,6 +367,24 @@
           <article class="panel panel-wide">
             <div class="panel-head">
               <div>
+                <div class="section-title">AUTO paths</div>
+                <h2 id="autoTitle">Autonomous routines by team</h2>
+              </div>
+              <div class="inline-actions">
+                <label>Team
+                  <select id="autoTeamSelect"></select>
+                </label>
+              </div>
+            </div>
+            <p class="helper-copy" id="autoInfo">Process matches (or turn on "AUTO paths only" in Settings for a fast sweep) to see each team's autonomous paths.</p>
+            <div class="auto-layout">
+              <div id="autoField"></div>
+              <div id="autoTable"></div>
+            </div>
+          </article>
+          <article class="panel panel-wide">
+            <div class="panel-head">
+              <div>
                 <div class="section-title">Match</div>
                 <h2 id="scoutMatchTitle">Processed match</h2>
               </div>
@@ -431,6 +449,10 @@
               <label class="checkbox wide">
                 <input id="settingBatchNoApproval" type="checkbox">
                 Batch mode: process matches without approving the automatic field calibration. Each match detects the field and goes straight to tracking (no stop at "Needs Approval"). The detected calibration is still saved in the match folder (field_corners_auto.json + preview image) to check later; if detection fails, the tracker falls back to finding the field frame by frame.
+              </label>
+              <label class="checkbox wide">
+                <input id="settingAutoOnly" type="checkbox">
+                AUTO paths only (fast scouting): track each match only through AUTO, about 4x faster. Gives AUTO paths for the Analytics page; shots, tips and distance then only cover AUTO, so these matches are left out of the full-match team stats. Untick to process whole matches.
               </label>
               <label class="checkbox wide">
                 <input id="settingTrackEveryFrame" type="checkbox">

@@ -1209,3 +1209,12 @@ label {
 .advanced-row.changed { background: rgba(254,143,0,0.08); }
 .advanced-row.changed code { color: #fe8f00; }
 @media (max-width: 760px) { .advanced-row { grid-template-columns: minmax(0, 1fr); } }
+
+.auto-layout { display: grid; grid-template-columns: minmax(0, 460px) minmax(0, 1fr); gap: 16px; align-items: start; }
+@media (max-width: 900px) { .auto-layout { grid-template-columns: minmax(0, 1fr); } }
+.auto-field { width: 100%; height: auto; background: #111; border-radius: 6px; }
+.auto-field polyline { fill: none; stroke-width: 1.4; stroke-linejoin: round; stroke-linecap: round; }
+.auto-field .auto-run { transition: opacity .15s; }
+.auto-field .auto-run.dim { opacity: 0.12; }
+.auto-swatch { display: inline-block; width: 12px; height: 12px; border-radius: 3px; }
+#autoTable { overflow-x: auto; }

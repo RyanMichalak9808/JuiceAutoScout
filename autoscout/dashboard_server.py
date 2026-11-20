@@ -147,6 +147,7 @@ class DashboardState:
             "track_every_frame": True,
             "tracking_sample_rate": 10.0,
             "crop_to_field": True,
+            "auto_paths_only": False,
             "stream_clip_lead_s": stream_split.CLIP_PRE_S,
             "stream_clip_tail_s": stream_split.CLIP_POST_S,
             # every other module-level setting (Settings tab, Advanced):
@@ -759,6 +760,8 @@ class DashboardState:
         command.append("--every-frame" if settings.get("track_every_frame", True) else "--no-every-frame")
         if not settings.get("crop_to_field", True):
             command.append("--no-roi")
+        if settings.get("auto_paths_only"):
+            command.append("--auto-only")
 
         debug_every = payload.get("debug_every")
         if debug_every in (None, ""):

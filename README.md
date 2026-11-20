@@ -89,6 +89,10 @@ The dashboard adds:
 
 If an event only has one long stream, paste its YouTube link into **Full stream YouTube link (optional)** on the Load Event screen; the stream is split as soon as the event loads. (A local video path works too, and the split can be started later from **Full Stream** on the Overview page.) The field buzzers in the audio are used to find every match, the matches are labeled from the FTC Events schedule, and a clip with the exact AUTO start is cut for each one. The matches can then be processed like any other.
 
+### AUTO paths
+
+Every processed match gets `auto_paths.json` / `.csv` / `.png`: each robot's AUTO start, path and end. The Analytics page shows every AUTO run of a team on the field with consistency numbers. For a fast sweep of an event, tick **AUTO paths only** in Settings (or pass `--auto-only`): tracking stops after AUTO, about 4x faster.
+
 ### Settings
 
 Everything that can be tuned is in the dashboard's **Settings** tab: the dashboard and tracking options at the top, and every remaining switch from the code (season.py, auto_scout.py, stream splitting, field detection) under **Advanced**, with the explanation from the code and the default. Changed values are saved in `dashboard_settings.json` and apply to matches started afterwards. New UPPERCASE settings added to those files appear there automatically.

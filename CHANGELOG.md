@@ -785,6 +785,33 @@ Tracking results (shots, tips, positions) are byte-identical to before.
 
 **Checked:** all icon files are served by the dashboard, and the dashboard and both tools link to an icon that loads.
 
+### 30. Team confirmation from the starting lineup (thirtieth commit)
+
+**Why:** every per-team number depends on knowing which tracked robot (R0-R3) is which team. With the alliance now guessed from the AUTO start side, the usual question left is which of an alliance's two robots is which team. That's fastest to answer by looking at the robots.
+
+**What:**
+- **Lineup picture saved during processing:** `team_confirm.jpg` plus `team_confirm.json` with each visible robot's pixel position. It's the earliest frame in the first 8 s of AUTO that shows the most robots, and the search stops as soon as all 4 are seen. This works in full and AUTO-only runs.
+- **Match menu, "Which robot is which team?":**
+  - the picture with a label on every robot, e.g. `R1 · 21536`, in the robot's AUTO-path color, outlined red or blue. Labels update live as teams change, and bumper numbers stay readable under them;
+  - **Swap red / Swap blue:** swap the two teams of an alliance in one click;
+  - **Confirm**, **Confirm & next unconfirmed**, and **Next unconfirmed (N)**, to work through a whole event quickly;
+  - a Confirmed / "Guessed - please confirm" badge. Unconfirmed matches keep their `*` in the match list;
+  - the menu also lists robots not visible in the picture (e.g. hidden behind a HIVE). Matches processed before this feature show a note to check against the video instead.
+- **Fixes in the match menu:**
+  - the "Saved." message never appeared, because it was written into an element that had just been replaced. Messages now belong to their match, so one never shows on another match;
+  - a duplicate team is refused, and so is a swap that can't work, each with a message.
+
+**Checked:**
+- **Picture placement:** on examples/piper_q9.mp4 and piper_q11.mp4, all 4 robots are in the picture (at 0.2 and 0.1 s), and each label sits on its robot. In Q9, R1's bumper reads 21536, matching the guess.
+- **Browser** (real event, two matches with pictures, one without):
+  - labels show the guessed teams, and Swap red updates them live;
+  - a duplicate team is refused, and a swap with a duplicate explains why;
+  - Confirm & next saved the swap to `team_map.json`, moved to the next unconfirmed match and showed "Qualification 9 confirmed." there;
+  - Q9 now shows Confirmed;
+  - the no-picture match shows its note, and Next unconfirmed jumps correctly;
+  - no page errors, and the page fits at 420 px.
+- **Tracking output** of a full run is byte-identical to before, and the picture is the same in full and AUTO-only runs.
+
 ## Results on the example videos
 
 | | Original / first version | Now |

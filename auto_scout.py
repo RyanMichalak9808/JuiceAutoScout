@@ -47,6 +47,7 @@ from util.juice_log import (
 SAVE_ALL_DEBUG_AROUND_MERGES = False   # save every debug frame while robots are merged (for debugging label swaps)
 PROCESS_EVERY_SOURCE_FRAME = True
 SHOT_DETECTOR_FPS = 30.0   # frame rate the shot detector's per-frame tuning is for
+TEAM_CONFIRM_WINDOW_S = 8.0   # team confirmation picture: earliest frame this early in AUTO showing the most robots
 DASHBOARD_EVENT_PREFIX = "@@AUTOSCOUT_DASHBOARD@@"
 apply_setting_overrides("auto_scout", globals())   # values changed in the dashboard Settings tab
 
@@ -295,6 +296,7 @@ def process_match(
                 debug_video_path, debug_codec, debug_fps))
 
     auto_calibration_failed = False
+    confirm_best = (0, None, None)   # (robots visible, jpg bytes, info) for team_confirm.jpg
     if not manual_corners_px and season.AUTO_FIELD_CALIBRATION:
         # No calibration given: detect the field (corners at floor level, HIVE,
         # FLOWER and overlay boxes) from the video itself.
@@ -453,6 +455,8 @@ def process_match(
         tip_events = hive_detector.update(frame, current_frame_num, match_time_s)
         tracker.set_hive_state(hive_detector.state(match_time_s))
         poses = tracker.update(frame, time_s=match_time_s)
+        if confirm_best[0] < 4 and 0.0 <= match_time_s <= TEAM_CONFIRM_WINDOW_S:
+            confirm_best = _maybe_team_confirm_frame(cv2, tracker, poses, frame, match_time_s, confirm_best)
         last_poses = poses
         if 0.0 <= match_time_s <= season.MATCH_END_S:
             resource_sampler.maybe_sample(frame, match_time_s, tracker)
@@ -719,6 +723,15 @@ def process_match(
                     r["distance_in"], r["visible_pct"]))
     except Exception as exc:  # AUTO paths must never fail the run
         print("[WARN] AUTO paths not written: {}".format(exc))
+    if confirm_best[1] is not None:
+        # picture of the starting lineup with each robot's position, so the
+        # dashboard can show which robot is which team (match menu)
+        with open(os.path.join(output_dir, "team_confirm.jpg"), "wb") as handle:
+            handle.write(confirm_best[1])
+        with open(os.path.join(output_dir, "team_confirm.json"), "w") as handle:
+            json.dump(confirm_best[2], handle, indent=1)
+        print("  Team confirmation picture: team_confirm.jpg ({} robots at t={:.1f}s)".format(
+            confirm_best[0], confirm_best[2]["match_time_s"]))
     with open(os.path.join(output_dir, "done.json"), "w") as handle:
         json.dump({"finished_at": time.time(), "frames_processed": processed,
                    "video": os.path.abspath(video_path), "auto_only": bool(auto_only)}, handle, indent=2)
@@ -790,6 +803,27 @@ def _tip_row(tip, video_fps):
         "level_before": "{:.3f}".format(tip.level_before),
         "level_after": "{:.3f}".format(tip.level_after),
     }
+
+
+def _maybe_team_confirm_frame(cv2, tracker, poses, frame, match_time_s, best):
+    """Keep the earliest early-AUTO frame that shows the most robots, with
+    each visible robot's pixel position (for the team confirmation view)."""
+    if not getattr(tracker, "_initialized", False):
+        return best
+    h, w = frame.shape[:2]
+    robots = []
+    for i, pose in enumerate(poses):
+        px = tracker._pos_px[i] if i < len(tracker._pos_px) else None
+        if pose.visible and px is not None and 0 <= px[0] < w and 0 <= px[1] < h:
+            robots.append({"robot": "R{}".format(i), "x": round(float(px[0]), 1), "y": round(float(px[1]), 1),
+                           "field_x_in": round(float(pose.x_center_in), 1), "field_y_in": round(float(pose.y_center_in), 1)})
+    if len(robots) <= best[0]:
+        return best
+    ok, jpg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 88])
+    if not ok:
+        return best
+    info = {"match_time_s": round(float(match_time_s), 2), "width": w, "height": h, "robots": robots}
+    return (len(robots), jpg.tobytes(), info)
 
 
 def _shot_row(event, video_fps):

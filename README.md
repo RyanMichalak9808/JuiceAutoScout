@@ -99,7 +99,7 @@ Everything that can be tuned is in the dashboard's **Settings** tab: the dashboa
 
 ### Scouting
 
-The **Analytics** page turns processed matches into scouting data: a sortable per-team table (shots made/missed, accuracy, AUTO shots, alliance tips, distance, red flags, next to EPA/OPR), a match-by-match view per team, and a menu for every processed match with its tables, tip timeline, heatmaps and CSV downloads. The tracker labels robots R0-R3; their teams are guessed from the HIVE they shoot into and can be confirmed per match (**Save robot teams**).
+The **Analytics** page turns processed matches into scouting data: a sortable per-team table (shots made/missed, accuracy, AUTO shots, alliance tips, distance, red flags, next to EPA/OPR), a match-by-match view per team, and a menu for every processed match with its tables, tip timeline, heatmaps and CSV downloads. The tracker labels robots R0-R3; their alliance is guessed from the side they start AUTO on, and each match's menu shows the starting lineup with a label on every robot, so the teams can be checked at a glance, swapped per alliance and confirmed (**Confirm & next unconfirmed** steps through the event).
 
 ## CLI Flags
 | Flag | Type | Default | Description |

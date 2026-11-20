@@ -115,7 +115,7 @@ def load_match(match_dir: Path, ftc_match: Optional[dict], url_for: Callable[[Pa
     files = {}
     for name in ("alliance_summary.csv", "robot_summary.csv", "shot_events.csv", "hive_tips.csv",
                  "robot_positions.csv", "resource_density.csv", "auto_paths.csv",
-                 "shot_heatmap.png", "resource_density.png", "auto_paths.png"):
+                 "shot_heatmap.png", "resource_density.png", "auto_paths.png", "team_confirm.jpg"):
         if (match_dir / name).exists():
             files[name] = url_for(match_dir / name)
     return {
@@ -127,6 +127,8 @@ def load_match(match_dir: Path, ftc_match: Optional[dict], url_for: Callable[[Pa
         "blue_score": (ftc_match or {}).get("blue_score"),
         "team_map_confirmed": bool(saved),
         "auto_only": bool((_read_json(match_dir / "done.json") or {}).get("auto_only")),
+        # starting-lineup picture with each robot's pixel position (team confirmation)
+        "confirm": _read_json(match_dir / "team_confirm.json") if (match_dir / "team_confirm.jpg").exists() else None,
         "robots": robots,
         "alliances": _read_csv(match_dir / "alliance_summary.csv"),
         "tips": [{"alliance": t.get("alliance"), "t": _num(t.get("match_time_s")), "clock": t.get("match_clock"),

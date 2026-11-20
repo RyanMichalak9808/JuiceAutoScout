@@ -1072,44 +1072,131 @@ function renderScoutTeamDetail() {
   }));
 }
 
+// Robot colors used in AUTO paths images (auto_paths.py ROBOT_COLORS_BGR).
+const ROBOT_COLORS = ["rgb(255,165,0)", "rgb(0,200,255)", "rgb(255,0,180)", "rgb(120,220,0)"];
+
+function scoutTeamAlliance(m, team) {
+  if (!team) return null;
+  if (m.red_teams.includes(team)) return "red";
+  if (m.blue_teams.includes(team)) return "blue";
+  return null;
+}
+
 function renderScoutMatch() {
   const m = (state.scouting?.matches || []).find((x) => x.dir === dom.scoutMatchSelect.value);
   if (!m) { dom.scoutMatchDetail.innerHTML = `<p class="helper-copy">No processed matches yet.</p>`; dom.scoutMatchTitle.textContent = "Processed match"; return; }
   state.scoutMatch = m.dir;
+  const msg = state.scoutMatchMsg && state.scoutMatchMsg.dir === m.dir ? state.scoutMatchMsg.text : "";
   dom.scoutMatchTitle.textContent = m.label + (m.auto_only ? " (AUTO only)" : "");
   const teams = [...m.red_teams.map((t) => [t, "red"]), ...m.blue_teams.map((t) => [t, "blue"])];
   const teamSelect = (r) => `<select data-robot="${escapeHtmlAttr(r.robot)}"><option value="">-</option>${
     teams.map(([t, a]) => `<option value="${escapeHtmlAttr(t)}"${r.team === t ? " selected" : ""}>${escapeHtml(t)} (${a})</option>`).join("")}</select>`;
-  const robots = m.robots.map((r) => `<tr><td>${r.robot}</td><td>${teamSelect(r)}</td><td>${escapeHtml(r.alliance || "?")}</td><td>${r.shots_made}</td><td>${r.shots_missed}</td><td>${r.auto_made}</td>
+  const robotColor = (id) => ROBOT_COLORS[Number(String(id).replace(/\D/g, "")) % ROBOT_COLORS.length];
+  const robots = m.robots.map((r) => `<tr><td><span class="auto-swatch" style="background:${robotColor(r.robot)}"></span> ${r.robot}</td><td>${teamSelect(r)}</td><td class="robot-alliance" data-robot="${escapeHtmlAttr(r.robot)}">${escapeHtml(r.alliance || "?")}</td><td>${r.shots_made}</td><td>${r.shots_missed}</td><td>${r.auto_made}</td>
     <td>${Math.round(r.distance_in / 12)}</td><td>${r.moving_pct}</td><td>${r.longest_stall_s}</td><td>${r.field_coverage_pct}</td><td class="flags">${escapeHtml(r.red_flags || "-")}</td></tr>`).join("");
+  // starting-lineup picture with live robot -> team labels
+  const c = m.confirm;
+  let lineup;
+  if (c && m.files["team_confirm.jpg"]) {
+    const seen = new Set(c.robots.map((r) => r.robot));
+    const hidden = m.robots.filter((r) => !seen.has(r.robot)).map((r) => r.robot);
+    const labels = c.robots.map((r) => `<div class="lineup-label" data-robot="${escapeHtmlAttr(r.robot)}" style="left:${(100 * r.x / c.width).toFixed(2)}%;top:${(100 * r.y / c.height).toFixed(2)}%">
+        <span class="lineup-dot" style="background:${robotColor(r.robot)}"></span><span class="lineup-text"></span></div>`).join("");
+    lineup = `<div class="lineup"><img src="${escapeHtmlAttr(m.files["team_confirm.jpg"])}" alt="Starting lineup">${labels}</div>
+      <p class="helper-copy">Starting lineup at ${c.match_time_s.toFixed(1)} s into AUTO. Check each label against the robot (bumper numbers are often readable); fix with the dropdowns or Swap, then Confirm.${hidden.length ? ` Not visible in this frame: ${hidden.join(", ")}.` : ""}</p>`;
+  } else {
+    lineup = `<p class="helper-copy">No starting-lineup picture for this match (it was processed before this feature, or no robot was visible early in AUTO). Check the robots against the video, then Confirm.</p>`;
+  }
+  // other matches still waiting for confirmation (the button jumps to them)
+  const unconfirmed = (state.scouting?.matches || []).filter((x) => !x.team_map_confirmed && x.dir !== m.dir).length;
   const alliances = m.alliances.map((a) => `<tr><td class="${escapeHtmlAttr(a.alliance)}">${escapeHtml(a.alliance)}</td><td>${a.tips}</td><td>${a.auto_tips}</td><td>${a.teleop_tips}</td><td>${a.endgame_tips_final_60s}</td><td>${a.first_tip_s || "-"}</td><td>${a.median_s_between_tips || "-"}</td><td class="flags">${escapeHtml(a.notes || "")}</td></tr>`).join("");
   const tips = m.tips.map((t) => `<span class="tip-chip ${escapeHtmlAttr(t.alliance)}">${escapeHtml(t.clock || "")} ${escapeHtml(t.phase || "")}</span>`).join("") || "none";
   const files = Object.entries(m.files).filter(([n]) => n.endsWith(".csv")).map(([n, u]) => `<a href="${escapeHtmlAttr(u)}" download>${escapeHtml(n)}</a>`).join(" · ");
   const img = (n, cap) => (m.files[n] ? `<figure><img src="${escapeHtmlAttr(m.files[n])}" alt="${escapeHtmlAttr(cap)}"><figcaption>${escapeHtml(cap)}</figcaption></figure>` : "");
   dom.scoutMatchDetail.innerHTML = `
     <p class="match-score"><span class="red">Red ${escapeHtml(m.red_teams.join(" + ") || "?")}: ${m.red_score ?? "-"}</span> &nbsp; <span class="blue">Blue ${escapeHtml(m.blue_teams.join(" + ") || "?")}: ${m.blue_score ?? "-"}</span></p>
-    <h3 class="scout-sub">Robots ${m.team_map_confirmed ? "" : '<span class="job-meta">(teams guessed from the HIVE each robot shoots into - check against the video and save)</span>'}</h3>
+    <h3 class="scout-sub">Which robot is which team? <span class="confirm-badge ${m.team_map_confirmed ? "ok" : "todo"}">${m.team_map_confirmed ? "Confirmed" : "Guessed - please confirm"}</span></h3>
+    ${lineup}
     <table class="analytics-table scout-detail"><tr><th>Robot</th><th>Team</th><th>Alliance</th><th>Made</th><th>Missed</th><th>AUTO made</th><th>Distance ft</th><th>Moving%</th><th>Longest stall s</th><th>Coverage%</th><th>Red flags</th></tr>${robots}</table>
-    <div class="inline-actions"><button type="button" class="primary" id="scoutSaveMap">Save robot teams</button><span class="job-meta" id="scoutSaveStatus"></span></div>
+    <div class="inline-actions confirm-actions">
+      <button type="button" id="scoutSwapRed">Swap red</button>
+      <button type="button" id="scoutSwapBlue">Swap blue</button>
+      <button type="button" class="primary" id="scoutSaveMap">Confirm</button>
+      <button type="button" class="primary" id="scoutSaveNext">Confirm &amp; next unconfirmed</button>
+      <button type="button" id="scoutNextUnconfirmed"${unconfirmed ? "" : " disabled"}>Next unconfirmed (${unconfirmed})</button>
+      <span class="job-meta" id="scoutSaveStatus">${escapeHtml(msg)}</span>
+    </div>
     <h3 class="scout-sub">Alliances</h3>
     <table class="analytics-table scout-detail"><tr><th>Alliance</th><th>Tips</th><th>AUTO</th><th>TELEOP</th><th>Final 60s</th><th>First tip s</th><th>Median s between</th><th>Notes</th></tr>${alliances}</table>
     <h3 class="scout-sub">HIVE tips</h3><div class="tip-row">${tips}</div>
     <div class="scout-images">${img("auto_paths.png", "AUTO paths")}${img("shot_heatmap.png", "Shot heatmap")}${img("resource_density.png", "POLLEN on the field")}</div>
     <p class="helper-copy">CSV: ${files || "none"}</p>`;
-  document.getElementById("scoutSaveMap").addEventListener("click", async () => {
+
+  const selects = () => [...dom.scoutMatchDetail.querySelectorAll("select[data-robot]")];
+  // a message belongs to the match it is shown on
+  const status = (text, dir = m.dir) => {
+    state.scoutMatchMsg = { dir, text };
+    const el = document.getElementById("scoutSaveStatus");
+    if (el && state.scoutMatch === dir) el.textContent = text;
+  };
+  const refreshLabels = () => {
+    for (const sel of selects()) {
+      const team = sel.value || null;
+      const alliance = scoutTeamAlliance(m, team);
+      const label = dom.scoutMatchDetail.querySelector(`.lineup-label[data-robot="${CSS.escape(sel.dataset.robot)}"]`);
+      if (label) {
+        label.querySelector(".lineup-text").textContent = `${sel.dataset.robot} · ${team || "?"}`;
+        label.classList.remove("red", "blue");
+        if (alliance) label.classList.add(alliance);
+      }
+      const cell = dom.scoutMatchDetail.querySelector(`.robot-alliance[data-robot="${CSS.escape(sel.dataset.robot)}"]`);
+      if (cell) cell.textContent = alliance || "?";
+    }
+  };
+  selects().forEach((sel) => sel.addEventListener("change", () => { status(""); refreshLabels(); }));
+  refreshLabels();
+  const swap = (alliance) => {
+    const allianceTeams = alliance === "red" ? m.red_teams : m.blue_teams;
+    const pair = selects().filter((sel) => allianceTeams.includes(sel.value));
+    if (pair.length !== 2 || pair[0].value === pair[1].value) { status(`Swap needs both ${alliance} teams on two different robots.`); return; }
+    [pair[0].value, pair[1].value] = [pair[1].value, pair[0].value];
+    status("");
+    refreshLabels();
+  };
+  document.getElementById("scoutSwapRed").addEventListener("click", () => swap("red"));
+  document.getElementById("scoutSwapBlue").addEventListener("click", () => swap("blue"));
+  const nextUnconfirmed = () => {
+    const list = state.scouting?.matches || [];
+    const i = list.findIndex((x) => x.dir === m.dir);
+    for (let k = 1; k <= list.length; k += 1) {
+      const cand = list[(i + k) % list.length];
+      if (!cand.team_map_confirmed && cand.dir !== m.dir) return cand.dir;
+    }
+    return null;
+  };
+  const goTo = (dir) => { state.scoutMatch = dir; dom.scoutMatchSelect.value = dir; renderScoutMatch(); };
+  const save = async (advance) => {
     const map = {};
-    dom.scoutMatchDetail.querySelectorAll("select[data-robot]").forEach((s) => { map[s.dataset.robot] = s.value || null; });
+    selects().forEach((sel) => { map[sel.dataset.robot] = sel.value || null; });
     const picked = Object.values(map).filter(Boolean);
-    const status = document.getElementById("scoutSaveStatus");
-    if (new Set(picked).size !== picked.length) { status.textContent = "Each team can only be one robot."; return; }
+    if (new Set(picked).size !== picked.length) { status("Each team can only be one robot."); return; }
+    const next = advance ? nextUnconfirmed() : null;
     try {
       await apiPost("/api/event/team-map", { event_code: state.currentEvent.event_code, dir: m.dir, map });
+      if (next) {
+        state.scoutMatch = next;
+        state.scoutMatchMsg = { dir: next, text: `${m.label} confirmed.` };
+      } else {
+        state.scoutMatchMsg = { dir: m.dir, text: advance ? "Confirmed - no unconfirmed matches left." : "Confirmed." };
+      }
       await loadScouting(true);
-      status.textContent = "Saved.";
     } catch (error) {
-      status.textContent = error.message;
+      status(error.message);
     }
-  });
+  };
+  document.getElementById("scoutSaveMap").addEventListener("click", () => save(false));
+  document.getElementById("scoutSaveNext").addEventListener("click", () => save(true));
+  document.getElementById("scoutNextUnconfirmed").addEventListener("click", () => { const d = nextUnconfirmed(); if (d) goTo(d); });
 }
 
 function statCard(label, value) {

@@ -1218,3 +1218,16 @@ label {
 .auto-field .auto-run.dim { opacity: 0.12; }
 .auto-swatch { display: inline-block; width: 12px; height: 12px; border-radius: 3px; }
 #autoTable { overflow-x: auto; }
+
+/* team confirmation: starting-lineup picture with live labels */
+.lineup { position: relative; max-width: 960px; margin: 6px 0; }
+.lineup img { display: block; width: 100%; height: auto; border-radius: 6px; }
+.lineup-label { position: absolute; transform: translate(-6px, -6px); display: flex; align-items: center; gap: 4px; pointer-events: none; white-space: nowrap; }
+.lineup-dot { width: 12px; height: 12px; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 0 3px #000; flex: none; }
+.lineup-text { background: rgba(0,0,0,0.78); color: #fff; font-size: 12px; font-weight: 700; padding: 1px 6px; border-radius: 4px; border: 2px solid #888; transform: translateY(-12px); }
+.lineup-label.red .lineup-text { border-color: #ff6b6b; }
+.lineup-label.blue .lineup-text { border-color: #6bb0ff; }
+.confirm-badge { font-size: 12px; padding: 2px 8px; border-radius: 10px; margin-left: 8px; vertical-align: middle; }
+.confirm-badge.ok { background: rgba(80,200,120,0.18); color: #7be39b; }
+.confirm-badge.todo { background: rgba(254,143,0,0.18); color: #fe8f00; }
+.confirm-actions { flex-wrap: wrap; gap: 8px; margin-top: 8px; }

@@ -156,6 +156,8 @@ class DashboardState:
         }
         self._load_saved_settings()
         self._apply_advanced(self.settings.get("advanced") or {})
+        self.update_status: Dict[str, object] = {"version": None, "behind": 0, "checked_at": None, "note": ""}
+        threading.Thread(target=self._watch_for_updates, daemon=True).start()
         self._restore_saved_jobs()
 
     # ── pause / resume across restarts ───────────────────────────────────
@@ -191,6 +193,36 @@ class DashboardState:
         if data and data.get("approved") and isinstance(data.get("corners_px"), list):
             return path
         return None
+
+    # ── update notice ────────────────────────────────────────────────────
+    # The launcher (start.bat / start.sh) pulls updates when it starts; this
+    # tells a dashboard that stays open for a whole event that one is waiting.
+    UPDATE_CHECK_EVERY_S = 3 * 3600
+
+    def _git(self, *args, timeout=30) -> Optional[str]:
+        try:
+            proc = subprocess.run(["git", *args], cwd=str(self.root_dir), capture_output=True,
+                                  text=True, timeout=timeout)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return proc.stdout.strip() if proc.returncode == 0 else None
+
+    def _watch_for_updates(self) -> None:
+        if not (self.root_dir / ".git").exists() or shutil.which("git") is None:
+            self.update_status["note"] = "not a git clone: update by downloading the latest version"
+            return
+        self.update_status["version"] = self._git("describe", "--tags", "--always", "--dirty")
+        while True:
+            if self._git("fetch", "--quiet") is not None:
+                behind = self._git("rev-list", "--count", "HEAD..@{u}")
+                self.update_status.update(behind=int(behind) if behind and behind.isdigit() else 0,
+                                          checked_at=time.time(), note="")
+            else:
+                self.update_status["note"] = "could not reach GitHub to check for updates"
+            time.sleep(self.UPDATE_CHECK_EVERY_S)
+
+    def get_version(self) -> Dict[str, object]:
+        return dict(self.update_status)
 
     def _restore_saved_jobs(self) -> None:
         """After a restart, matches that were waiting for calibration approval
@@ -1147,6 +1179,9 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         path = parsed.path
         if path == "/api/health":
             self._write_json({"ok": True, "time": time.time()})
+            return
+        if path == "/api/version":
+            self._write_json(self.server.state.get_version())
             return
         if path == "/api/settings/advanced":
             self._write_json(self.server.state.advanced_settings())

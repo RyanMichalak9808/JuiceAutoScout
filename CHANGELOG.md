@@ -812,6 +812,47 @@ Tracking results (shots, tips, positions) are byte-identical to before.
   - no page errors, and the page fits at 420 px.
 - **Tracking output** of a full run is byte-identical to before, and the picture is the same in full and AUTO-only runs.
 
+### 31. One-click start and automatic updates (thirty-first commit)
+
+**Why:** the target users are FTC students, often the team's programmers. They need something that's easy to start and easy to keep up to date, without rebuilding or downloading a large .exe for every change.
+
+**What:**
+- **`start.bat` (Windows) / `start.sh` (macOS/Linux):** double-click or run. Each one finds Python 3.10+ and creates a private environment in `.venv`.
+  - **Finding Python on Windows:** the `py` launcher first, then `python`, and only if it actually runs, so the Microsoft Store stub is skipped.
+  - **Broken environment:** if `.venv` exists but its Python no longer runs (Python upgraded or removed), it's rebuilt automatically.
+  - **Missing pieces:** clear messages with the install command for a missing Python or a missing `python3-venv`. On Windows the window pauses on errors, so the message can be read.
+- **`launcher.py`:** the shared logic behind both scripts.
+  - **Update:** `git pull --ff-only` on every start. It's skipped, with a message saying why, when you've edited tracked files, when you're offline, on a pinned (tag) checkout, on a ZIP download, or with `--no-update`. After an update it restarts on the new code.
+  - **Packages:** installs `requirements.txt` when it changed (tracked by a hash) and updates yt-dlp once a day.
+  - **ffmpeg check,** with the install command for each platform.
+  - **Starting the dashboard:** opens it in the browser. If it's already running, it only opens it. If the port is taken, it picks the next free one.
+  - **Options:** `--no-update`, `--no-browser`, `--port`.
+- **Safe self-update:** both scripts run the launcher on their last line, together with `exit`. `cmd` and `bash` read scripts from disk as they go, so this makes sure nothing is read from a `start.bat` / `start.sh` that `git pull` just replaced.
+- **`requirements.txt`:** numpy, opencv-python, scipy, progress, yt-dlp. There was no requirements file before.
+- **`.gitattributes`:** keeps `*.bat` CRLF and `*.sh` LF on every checkout, so a Windows clone never looks "changed" and blocks updates.
+- **Update notice in the dashboard:** it checks GitHub at startup and every 3 hours (`GET /api/version`). When an update is waiting, the top bar shows **UPDATE - N new changes**, with how to update.
+- **`.gitignore` fix:** a missing line break had joined two lines, so `dashboard_settings.json` wasn't actually ignored. Now it and `.venv/` are, so updates never touch settings, results or the environment.
+- **README:** a new **Install and update** section.
+
+**Checked** on Linux with a sandbox remote ("GitHub") and clones, in three rounds:
+- **Start:**
+  - fresh clone first start: `.venv` created, all packages installed, dashboard healthy in 9-20 s;
+  - a tracking job run from the new `.venv` finished;
+  - second start: no reinstall, about 1 s;
+  - already running: no second copy started;
+  - port taken: moved to the next free port.
+- **Updates:**
+  - an update was pulled, including a longer `start.sh` replacing the running one, with no shell errors. The launcher restarted on the new code, packages were re-checked when `requirements.txt` changed, and settings and results were kept;
+  - local edits: not updated, with a message, and the edit was kept;
+  - offline, `--no-update` and a ZIP download (no git): each started with the right message.
+- **Setup problems:**
+  - ffmpeg missing, no suitable Python and venv creation failing: each gave the right message, and no broken `.venv` was left behind;
+  - a broken `.venv` was rebuilt automatically.
+- **Windows git setup:** a simulated Windows clone (`core.autocrlf=true`) checks out `start.bat` with CRLF and shows no phantom changes.
+- **Browser:** the update notice showed "1 new change" with no page errors.
+
+**Not run on Windows:** Wine crashes in this environment, and the GitHub Actions API isn't reachable from here, so `start.bat` wasn't executed. It was reviewed line by line instead. The review found and fixed a Windows-only port-check bug: `SO_REUSEADDR` lets Windows bind a port that's in use, so a taken port is now detected by trying to connect to it. The launcher code it runs is the same as the tested `start.sh` path.
+
 ## Results on the example videos
 
 | | Original / first version | Now |

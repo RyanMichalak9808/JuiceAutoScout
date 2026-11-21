@@ -36,8 +36,45 @@ Output coordinates now use a center-origin field frame:
 - `y` increases downward in the projected field plane used by the tracker
 - the field corners are approximately `(-72, -72)` to `(72, 72)` in inches
 
-## Requirements
-Install the runtime dependencies:
+## Install and update (one click)
+
+**You need:** [Python 3.10+](https://www.python.org/downloads/), [git](https://git-scm.com/downloads) and ffmpeg.
+
+| | Windows | macOS | Linux (Ubuntu/Debian) |
+|---|---|---|---|
+| Python | `winget install Python.Python.3.12` | `brew install python` | `sudo apt install python3 python3-venv` |
+| git | `winget install Git.Git` | `xcode-select --install` | `sudo apt install git` |
+| ffmpeg | `winget install Gyan.FFmpeg` | `brew install ffmpeg` | `sudo apt install ffmpeg` |
+
+**Install once:**
+
+```bash
+git clone https://github.com/RyanMichalak9808/JuiceAutoScout
+```
+
+**Start:** double-click **`start.bat`** (Windows) or run **`./start.sh`** (macOS/Linux). The first start takes a few minutes. It creates a private Python environment in `.venv` and installs the packages from `requirements.txt`. After that, every start:
+
+1. **updates AutoScout** with `git pull`, when it's safe;
+2. **re-installs packages** only when `requirements.txt` changed, and **keeps yt-dlp current** (YouTube breaks old versions every few weeks);
+3. checks that **ffmpeg** is installed;
+4. **starts the dashboard and opens it** in your browser. If it's already running, it just opens it. If the port is taken by another program, it uses the next free one.
+
+Options are passed on: `start.bat --no-update`, `--no-browser`, `--port 8766`.
+
+**Updating while the dashboard is open:** it checks GitHub in the background and shows an **UPDATE** notice in the top bar. Close the dashboard window and start it again to update.
+
+**Your data is safe during updates:** settings (`dashboard_settings.json`), results (`output_dashboard/`) and `.venv` aren't part of the repository, so updates never touch them.
+
+**When it won't update:**
+- **You edited a tracked file:** it skips the update and tells you. Commit your change or run `git stash`, then start again.
+- **You're offline:** it starts the version you have.
+- **You want a fixed version for a competition weekend:** `git checkout v1.0` (a tag). The launcher doesn't update a checkout that isn't on a branch. Run `git checkout master` to follow updates again.
+- **You downloaded the ZIP instead of cloning:** the launcher can't update it. Download the new ZIP and copy `dashboard_settings.json` and `output_dashboard/` over.
+
+**If something breaks after a Python upgrade:** the launcher notices a broken `.venv` and rebuilds it. You can also delete the `.venv` folder yourself and start again.
+
+## Requirements (manual setup)
+The launcher above does this for you. To set things up by hand instead, install the runtime dependencies:
 
 ```bash
 python3 -m pip install opencv-python numpy progress

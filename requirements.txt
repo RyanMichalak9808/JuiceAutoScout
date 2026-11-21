@@ -1,0 +1,7 @@
+# Python packages for AutoScout (installed into .venv by start.bat / start.sh).
+# ffmpeg is also needed (not a Python package): see README, "Install and update".
+numpy>=1.24
+opencv-python>=4.8
+scipy>=1.10
+progress>=1.6
+yt-dlp

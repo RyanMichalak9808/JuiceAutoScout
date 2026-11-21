@@ -255,6 +255,25 @@ function initializeState() {
   }
 }
 
+// Update notice: the dashboard checks GitHub in the background; updates are
+// installed by closing the dashboard and running start.bat / start.sh again.
+async function refreshVersion() {
+  const chip = document.getElementById("updateChip");
+  if (!chip) return;
+  try {
+    const v = await fetch("/api/version").then((r) => r.json());
+    state.version = v;
+    const behind = Number(v.behind) || 0;
+    chip.classList.toggle("hidden", behind <= 0);
+    document.getElementById("updateLabel").textContent = `${behind} new change${behind === 1 ? "" : "s"}`;
+    chip.title = `A newer AutoScout is on GitHub (you have ${v.version || "an older version"}). `
+      + "Close the dashboard window and run start.bat / start.sh again to update. "
+      + "Your settings and results are kept.";
+  } catch (_error) {
+    chip.classList.add("hidden");
+  }
+}
+
 async function boot() {
   syncRouteFromHash();
   await Promise.all([
@@ -271,6 +290,8 @@ async function boot() {
     setRoute("select");
   }
   setInterval(refreshJobs, 2500);
+  void refreshVersion();
+  setInterval(refreshVersion, 30 * 60 * 1000);
   setInterval(() => {
     if (state.autoQueueEnabled) {
       maybeRunAutoQueue();

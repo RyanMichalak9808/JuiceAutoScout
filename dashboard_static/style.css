@@ -1231,3 +1231,6 @@ label {
 .confirm-badge.ok { background: rgba(80,200,120,0.18); color: #7be39b; }
 .confirm-badge.todo { background: rgba(254,143,0,0.18); color: #fe8f00; }
 .confirm-actions { flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+
+.update-chip { border-color: #fe8f00 !important; cursor: help; }
+.update-chip strong { color: #fe8f00; }

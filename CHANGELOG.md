@@ -863,7 +863,7 @@ Tracking results (shots, tips, positions) are byte-identical to before.
 
 ### 33. README links the changelog; v1.0 tag (thirty-third commit)
 
-- **README:** a bold link to this changelog right under the title.
+- **README:** a bold link to this changelog at the very top. It replaces a note added on GitHub whose link didn't work: it pointed to `util/changelog.md` and used image syntax.
 - **`v1.0` tag:** the first release, a fixed version teams can stay on during an event with `git checkout v1.0`. The launcher doesn't auto-update a tag checkout; `git checkout master` follows updates again.
 
 ## Results on the example videos

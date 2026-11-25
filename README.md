@@ -1,10 +1,8 @@
-#PLEASE READ CHANGELOG AS WELL!!! ![Changelog](util/changelog.md)
+**[What's new in this BIOBUZZ version: see the CHANGELOG](CHANGELOG.md)**
 
 ![Project Header Image](assets/Project-REDACTED-Header.png)
 
 # *FIRST* Tech Challenge Automatic Scouter (Project REDACTED)
-
-**[What's new in this BIOBUZZ version: see the CHANGELOG](CHANGELOG.md)**
 
 https://github.com/user-attachments/assets/64045d5d-e12f-4a64-a7b1-fd415e46685a
 

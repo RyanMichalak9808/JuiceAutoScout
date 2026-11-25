@@ -866,6 +866,10 @@ Tracking results (shots, tips, positions) are byte-identical to before.
 - **README:** a bold link to this changelog at the very top. It replaces a note added on GitHub whose link didn't work: it pointed to `util/changelog.md` and used image syntax.
 - **`v1.0` tag:** the first release, a fixed version teams can stay on during an event with `git checkout v1.0`. The launcher doesn't auto-update a tag checkout; `git checkout master` follows updates again.
 
+### 34. Credits: how this version was made (thirty-fourth commit)
+
+- **README, Credits section:** most of this version's code was written with Claude (Anthropic's AI). Team 9808 chose what to build, tested on real BIOBUZZ streams and steered the fixes. Commits Claude helped write carry a `Co-Authored-By: Claude` line. Suggestions and pull requests are invited.
+
 ## Results on the example videos
 
 | | Original / first version | Now |

@@ -302,5 +302,7 @@ See `CONTRIBUTING.md` for setup, validation, and pull request guidelines.
 JuiceAutoScout was created by **Siddharth Ray, FTC Team 16236 Juice** (the original tracker, dashboard and DECODE season version).
 This version, the BIOBUZZ (2026-2027) adaptation with the scouting dashboard, stream splitting, AUTO paths and one-click launcher, is maintained by **FTC Team 9808**. See `CHANGELOG.md` for what changed.
 
+Most of the code for this version was written with **Claude** (Anthropic's AI) in an AI-assisted "vibecoding" workflow. Team 9808 decided what to build, tested it on real BIOBUZZ event streams, found what broke and steered the fixes. Claude wrote the large majority of the code. Commits it helped write carry a `Co-Authored-By: Claude` line. Suggestions, bug reports and pull requests are very welcome, especially from anyone who spots something that could be done better.
+
 ## License
 This project is licensed under the MIT license, please see `LICENSE` for more information. Both copyright holders are listed there. The notice must be kept in all copies.

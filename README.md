@@ -296,5 +296,9 @@ To inspect the resulting WPILOG:
 ## Contributing
 See `CONTRIBUTING.md` for setup, validation, and pull request guidelines.
 
+## Credits
+JuiceAutoScout was created by **Siddharth Ray, FTC Team 16236 Juice** (the original tracker, dashboard and DECODE season version).
+This version, the BIOBUZZ (2026-2027) adaptation with the scouting dashboard, stream splitting, AUTO paths and one-click launcher, is maintained by **FTC Team 9808**. See `CHANGELOG.md` for what changed.
+
 ## License
-This project is licensed under the MIT license, please see `LICENSE` for more information.
+This project is licensed under the MIT license, please see `LICENSE` for more information. Both copyright holders are listed there. The notice must be kept in all copies.

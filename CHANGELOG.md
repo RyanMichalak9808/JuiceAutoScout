@@ -853,6 +853,14 @@ Tracking results (shots, tips, positions) are byte-identical to before.
 
 **Not run on Windows:** Wine crashes in this environment, and the GitHub Actions API isn't reachable from here, so `start.bat` wasn't executed. It was reviewed line by line instead. The review found and fixed a Windows-only port-check bug: `SO_REUSEADDR` lets Windows bind a port that's in use, so a taken port is now detected by trying to connect to it. The launcher code it runs is the same as the tested `start.sh` path.
 
+### 32. Attribution and copyright (thirty-second commit)
+
+- **`LICENSE`:** still MIT. It now lists both copyright holders:
+  - Siddharth Ray (FTC Team 16236 Juice), the original JuiceAutoScout;
+  - FTC Team 9808, the BIOBUZZ adaptation, dashboard and scouting features.
+  - The MIT permission text is unchanged and must be kept in all copies.
+- **`README.md`:** a new **Credits** section names the original author and team, and says what this version adds.
+
 ## Results on the example videos
 
 | | Original / first version | Now |

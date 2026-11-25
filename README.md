@@ -2,6 +2,8 @@
 
 # *FIRST* Tech Challenge Automatic Scouter (Project REDACTED)
 
+**[What's new in this BIOBUZZ version: see the CHANGELOG](CHANGELOG.md)**
+
 https://github.com/user-attachments/assets/64045d5d-e12f-4a64-a7b1-fd415e46685a
 
 ![Analysis Screenahot](assets/example-analysis-1.webp)

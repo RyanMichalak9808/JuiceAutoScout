@@ -861,6 +861,11 @@ Tracking results (shots, tips, positions) are byte-identical to before.
   - The MIT permission text is unchanged and must be kept in all copies.
 - **`README.md`:** a new **Credits** section names the original author and team, and says what this version adds.
 
+### 33. README links the changelog; v1.0 tag (thirty-third commit)
+
+- **README:** a bold link to this changelog right under the title.
+- **`v1.0` tag:** the first release, a fixed version teams can stay on during an event with `git checkout v1.0`. The launcher doesn't auto-update a tag checkout; `git checkout master` follows updates again.
+
 ## Results on the example videos
 
 | | Original / first version | Now |

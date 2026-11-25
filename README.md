@@ -1,3 +1,5 @@
+#PLEASE READ CHANGELOG AS WELL!!! ![Changelog](util/changelog.md)
+
 ![Project Header Image](assets/Project-REDACTED-Header.png)
 
 # *FIRST* Tech Challenge Automatic Scouter (Project REDACTED)
